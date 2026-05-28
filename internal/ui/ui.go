@@ -11,6 +11,8 @@ import (
 	"github.com/ReubenPercival/flux/internal/monitor"
 )
 
+const fluxTitle = "    ╭──────────────────╮\n    │     FLUX         │\n    ╰──────────────────╯"
+
 var (
 	colorCyan     = lipgloss.Color("#7dcfff")
 	colorGreen    = lipgloss.Color("#9ece6a")
@@ -49,10 +51,13 @@ var (
 
 type tickMsg time.Time
 
+// Model represents the UI state
+// Note: Model is not shared across goroutines. Bubble Tea runs the Update and View
+// functions sequentially on a single goroutine, so the model is thread-safe within
+// the context of Bubble Tea's event loop.
 type Model struct {
 	monitor *monitor.Monitor
 	spinner spinner.Model
-	ticker  *time.Ticker
 }
 
 func NewModel(mon *monitor.Monitor) Model {
@@ -63,7 +68,6 @@ func NewModel(mon *monitor.Monitor) Model {
 	return Model{
 		monitor: mon,
 		spinner: sp,
-		ticker:  time.NewTicker(1 * time.Second),
 	}
 }
 
@@ -99,7 +103,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	title := titleStyle("    ╭──────────────────╮\n    │     FLUX         │\n    ╰──────────────────╯")
+	title := titleStyle(fluxTitle)
 
 	stats := m.renderSystemStats()
 	disks := m.renderDisks()
@@ -337,5 +341,3 @@ func (m Model) percentColor(percent float64) lipgloss.Color {
 		return colorRed
 	}
 }
-
-

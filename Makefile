@@ -27,9 +27,13 @@ test:
 	go test ./...
 
 # Install binary globally
+# Installs to $(GOPATH)/bin (typically ~/go/bin)
+# Make sure $(GOPATH)/bin is in your PATH
 install: build
-	@echo "Installing flux to \$(GOPATH)/bin..."
+	@echo "Installing flux to $(GOPATH)/bin..."
+	@echo "Ensure $(GOPATH)/bin is in your PATH"
 	go install
+	@echo "Installation complete! Run 'flux' from terminal."
 
 # Format code
 fmt:
