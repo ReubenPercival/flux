@@ -56,8 +56,9 @@ type tickMsg time.Time
 // functions sequentially on a single goroutine, so the model is thread-safe within
 // the context of Bubble Tea's event loop.
 type Model struct {
-	monitor *monitor.Monitor
-	spinner spinner.Model
+	monitor    *monitor.Monitor
+	spinner    spinner.Model
+	cpuHistory []float64
 }
 
 func NewModel(mon *monitor.Monitor) Model {
@@ -90,6 +91,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tickMsg:
 		m.monitor.Update()
+		m.cpuHistory = append(m.cpuHistory, m.monitor.CPU.UsagePercent)
+		if len(m.cpuHistory) > 60 {
+			m.cpuHistory = m.cpuHistory[1:]
+		}
 		return m, tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
 			return tickMsg(t)
 		})
@@ -132,21 +137,36 @@ func (m Model) View() string {
 
 func (m Model) renderSystemStats() string {
 	cpuBar := m.renderGradientBar(m.monitor.CPU.UsagePercent, 30)
-	memBar := m.renderGradientBar(m.monitor.Memory.UsagePercent, 30)
-	swapBar := m.renderGradientBar(m.monitor.Swap.UsagePercent, 30)
-
 	cpuPct := m.colorizePercent(m.monitor.CPU.UsagePercent)
+	cpuLine := fmt.Sprintf("%s %s  %s (%d cores)",
+		labelStyle(" CPU"), cpuBar, cpuPct, m.monitor.CPU.CoreCount)
+
+	var cpuExtras []string
+	if len(m.cpuHistory) > 0 {
+		spark := lipgloss.NewStyle().Foreground(colorTeal).Render(
+			m.renderSparkline(m.cpuHistory, 30))
+		loadStr := m.colorizeLoad(m.monitor.CPU.LoadAvg1, m.monitor.CPU.LoadAvg5, m.monitor.CPU.LoadAvg15, m.monitor.CPU.CoreCount)
+		cpuExtras = append(cpuExtras, fmt.Sprintf("      %s  %s", spark, loadStr))
+	}
+	if len(m.monitor.CPU.PerCPU) > 0 {
+		cpuExtras = append(cpuExtras, m.renderPerCoreCores())
+	}
+
+	memBar := m.renderGradientBar(m.monitor.Memory.UsagePercent, 30)
 	memPct := m.colorizePercent(m.monitor.Memory.UsagePercent)
+	memLine := fmt.Sprintf("%s %s  %s (%dMB/%dMB)",
+		labelStyle(" MEM"), memBar, memPct, m.monitor.Memory.UsedMB, m.monitor.Memory.TotalMB)
+
+	swapBar := m.renderGradientBar(m.monitor.Swap.UsagePercent, 30)
 	swapPct := m.colorizePercent(m.monitor.Swap.UsagePercent)
+	swapLine := fmt.Sprintf("%s %s  %s (%dMB/%dMB)",
+		labelStyle("SWAP"), swapBar, swapPct, m.monitor.Swap.UsedMB, m.monitor.Swap.TotalMB)
 
-	stats := fmt.Sprintf(
-		"%s %s  %s (%d cores)\n%s %s  %s (%dMB/%dMB)\n%s %s  %s (%dMB/%dMB)",
-		labelStyle(" CPU"), cpuBar, cpuPct, m.monitor.CPU.CoreCount,
-		labelStyle(" MEM"), memBar, memPct, m.monitor.Memory.UsedMB, m.monitor.Memory.TotalMB,
-		labelStyle("SWAP"), swapBar, swapPct, m.monitor.Swap.UsedMB, m.monitor.Swap.TotalMB,
-	)
+	parts := []string{cpuLine}
+	parts = append(parts, cpuExtras...)
+	parts = append(parts, memLine, swapLine)
 
-	return panelStyle.Render(stats)
+	return panelStyle.Render(strings.Join(parts, "\n"))
 }
 
 func (m Model) renderGPUs() string {
@@ -340,4 +360,100 @@ func (m Model) percentColor(percent float64) lipgloss.Color {
 	default:
 		return colorRed
 	}
+}
+
+func (m Model) renderSparkline(data []float64, width int) string {
+	if len(data) == 0 {
+		return strings.Repeat(" ", width)
+	}
+
+	if len(data) > width {
+		data = data[len(data)-width:]
+	}
+
+	chars := []rune("▁▂▃▄▅▆▇█")
+	var sb strings.Builder
+	for _, val := range data {
+		idx := int(val / 100.0 * 7)
+		if idx < 0 {
+			idx = 0
+		}
+		if idx > 7 {
+			idx = 7
+		}
+		sb.WriteRune(chars[idx])
+	}
+
+	return sb.String()
+}
+
+func (m Model) renderMiniBar(percent float64, width int) string {
+	filled := int(float64(width) * percent / 100)
+	if filled > width {
+		filled = width
+	}
+
+	c := m.percentColor(percent)
+	filledChar := lipgloss.NewStyle().Foreground(c).Render("█")
+	emptyChar := lipgloss.NewStyle().Foreground(colorBorder).Render("░")
+
+	var sb strings.Builder
+	for i := 0; i < width; i++ {
+		if i < filled {
+			sb.WriteString(filledChar)
+		} else {
+			sb.WriteString(emptyChar)
+		}
+	}
+
+	return sb.String()
+}
+
+func (m Model) renderPerCoreCores() string {
+	cores := m.monitor.CPU.PerCPU
+	if len(cores) == 0 {
+		return ""
+	}
+
+	barWidth := 8
+	var rows []string
+
+	for i := 0; i < len(cores); i += 2 {
+		var row string
+
+		c := cores[i]
+		bar := m.renderMiniBar(c, barWidth)
+		pct := lipgloss.NewStyle().Foreground(m.percentColor(c)).Render(fmt.Sprintf("%5.1f%%", c))
+		row += fmt.Sprintf(" C%d %s %s", i, bar, pct)
+
+		if i+1 < len(cores) {
+			c = cores[i+1]
+			bar = m.renderMiniBar(c, barWidth)
+			pct = lipgloss.NewStyle().Foreground(m.percentColor(c)).Render(fmt.Sprintf("%5.1f%%", c))
+			row += fmt.Sprintf("  C%d %s %s", i+1, bar, pct)
+		}
+
+		rows = append(rows, row)
+	}
+
+	return strings.Join(rows, "\n")
+}
+
+func (m Model) colorizeLoad(load1, load5, load15 float64, cores int32) string {
+	loadColor := func(l float64) lipgloss.Color {
+		switch {
+		case l < float64(cores)*0.7:
+			return colorGreen
+		case l < float64(cores)*1.5:
+			return colorYellow
+		default:
+			return colorRed
+		}
+	}
+
+	l1 := lipgloss.NewStyle().Foreground(loadColor(load1)).Render(fmt.Sprintf("%.2f", load1))
+	l5 := lipgloss.NewStyle().Foreground(loadColor(load5)).Render(fmt.Sprintf("%.2f", load5))
+	l15 := lipgloss.NewStyle().Foreground(loadColor(load15)).Render(fmt.Sprintf("%.2f", load15))
+
+	return fmt.Sprintf("Load: %s %s %s", l1, l5, l15)
 }
