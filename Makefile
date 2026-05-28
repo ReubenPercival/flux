@@ -1,4 +1,4 @@
-.PHONY: build run clean test install
+.PHONY: build run clean test install deps fmt lint
 
 # Build the binary
 build:
@@ -6,7 +6,7 @@ build:
 	go build -o flux .
 
 # Run the application
-run: build
+run: deps build
 	@echo "Running flux..."
 	./flux
 

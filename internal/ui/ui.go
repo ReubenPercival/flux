@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -11,43 +12,53 @@ import (
 )
 
 var (
-	colorsGreen  = lipgloss.Color("#2ecc71")
-	colorYellow  = lipgloss.Color("#f39c12")
-	colorRed     = lipgloss.Color("#e74c3c")
-	colorCyan    = lipgloss.Color("#3498db")
-	colorMagenta = lipgloss.Color("#9b59b6")
-	colorWhite   = lipgloss.Color("#ecf0f1")
-	colorDark    = lipgloss.Color("#2c3e50")
+	colorCyan     = lipgloss.Color("#7dcfff")
+	colorGreen    = lipgloss.Color("#9ece6a")
+	colorYellow   = lipgloss.Color("#e0af68")
+	colorOrange   = lipgloss.Color("#ff9e64")
+	colorRed      = lipgloss.Color("#f7768e")
+	colorPurple   = lipgloss.Color("#bb9af7")
+	colorTeal     = lipgloss.Color("#2ac3de")
+	colorDim      = lipgloss.Color("#565f89")
+	colorBorder   = lipgloss.Color("#3b4261")
+
+	appStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorBorder).
+		Padding(1, 2)
 
 	titleStyle = lipgloss.NewStyle().
 		Foreground(colorCyan).
 		Bold(true).
-		Padding(0, 2)
-
-	panelStyle = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorMagenta).
-		Padding(1, 2)
+		MarginBottom(1).
+		Render
 
 	headerStyle = lipgloss.NewStyle().
-		Foreground(colorCyan).
+		Foreground(colorTeal).
 		Bold(true)
+
+	labelStyle = lipgloss.NewStyle().
+		Foreground(colorDim).
+		Render
+
+	panelStyle = lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(colorBorder).
+		Padding(0, 1)
 )
 
 type tickMsg time.Time
 
-// Model represents the TUI state
 type Model struct {
 	monitor *monitor.Monitor
 	spinner spinner.Model
 	ticker  *time.Ticker
 }
 
-// NewModel creates a new UI model
 func NewModel(mon *monitor.Monitor) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(colorGreen)
+	sp.Style = lipgloss.NewStyle().Foreground(colorTeal)
 
 	return Model{
 		monitor: mon,
@@ -56,9 +67,7 @@ func NewModel(mon *monitor.Monitor) Model {
 	}
 }
 
-// Init initializes the model
 func (m Model) Init() tea.Cmd {
-	// Update monitor immediately
 	m.monitor.Update()
 	return tea.Batch(
 		m.spinner.Tick,
@@ -68,7 +77,6 @@ func (m Model) Init() tea.Cmd {
 	)
 }
 
-// Update handles messages
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -90,133 +98,244 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View renders the UI
 func (m Model) View() string {
-	output := ""
+	title := titleStyle("    ╭──────────────────╮\n    │     FLUX         │\n    ╰──────────────────╯")
 
-	// Header
-	header := titleStyle.Render("╱═══════ FLUX ════════╲") + "\n"
-	output += header
-
-	// CPU, Memory, Swap stats
 	stats := m.renderSystemStats()
-	output += stats + "\n"
-
-	// Disk usage
 	disks := m.renderDisks()
-	output += disks + "\n"
+	gpus := m.renderGPUs()
+	procs := m.renderProcesses()
+	netw := m.renderNetwork()
+	footer := m.renderFooter()
 
-	// Processes
-	processes := m.renderProcesses()
-	output += processes + "\n"
+	var sections []string
+	sections = append(sections, stats)
+	if gpus != "" {
+		sections = append(sections, gpus)
+	}
+	sections = append(sections, disks)
+	sections = append(sections, procs)
+	sections = append(sections, netw)
 
-	// Network
-	network := m.renderNetwork()
-	output += network + "\n"
+	body := lipgloss.JoinVertical(lipgloss.Top, sections...)
 
-	// Footer
-	footer := lipgloss.NewStyle().
-		Foreground(colorDark).
-		Render("q to quit • Updated: " + m.monitor.LastUpdate.Format("15:04:05"))
-	output += footer
-
-	return output
+	return appStyle.Render(
+		title + "\n\n" +
+			body + "\n" +
+			footer,
+	)
 }
 
 func (m Model) renderSystemStats() string {
-	cpuBar := m.renderProgressBar(m.monitor.CPU.UsagePercent, 30)
-	memBar := m.renderProgressBar(m.monitor.Memory.UsagePercent, 30)
-	swapBar := m.renderProgressBar(m.monitor.Swap.UsagePercent, 30)
+	cpuBar := m.renderGradientBar(m.monitor.CPU.UsagePercent, 30)
+	memBar := m.renderGradientBar(m.monitor.Memory.UsagePercent, 30)
+	swapBar := m.renderGradientBar(m.monitor.Swap.UsagePercent, 30)
+
+	cpuPct := m.colorizePercent(m.monitor.CPU.UsagePercent)
+	memPct := m.colorizePercent(m.monitor.Memory.UsagePercent)
+	swapPct := m.colorizePercent(m.monitor.Swap.UsagePercent)
 
 	stats := fmt.Sprintf(
-		"CPU:  %s %.1f%% (%d cores)\nMEM:  %s %.1f%% (%dMB/%dMB)\nSWAP: %s %.1f%% (%dMB/%dMB)\n",
-		cpuBar, m.monitor.CPU.UsagePercent, m.monitor.CPU.CoreCount,
-		memBar, m.monitor.Memory.UsagePercent, m.monitor.Memory.UsedMB, m.monitor.Memory.TotalMB,
-		swapBar, m.monitor.Swap.UsagePercent, m.monitor.Swap.UsedMB, m.monitor.Swap.TotalMB,
+		"%s %s  %s (%d cores)\n%s %s  %s (%dMB/%dMB)\n%s %s  %s (%dMB/%dMB)",
+		labelStyle(" CPU"), cpuBar, cpuPct, m.monitor.CPU.CoreCount,
+		labelStyle(" MEM"), memBar, memPct, m.monitor.Memory.UsedMB, m.monitor.Memory.TotalMB,
+		labelStyle("SWAP"), swapBar, swapPct, m.monitor.Swap.UsedMB, m.monitor.Swap.TotalMB,
 	)
 
 	return panelStyle.Render(stats)
 }
 
-func (m Model) renderDisks() string {
-	content := headerStyle.Render("📀 DISK USAGE") + "\n\n"
-
-	for _, disk := range m.monitor.Disks {
-		bar := m.renderProgressBar(disk.UsagePercent, 25)
-		content += fmt.Sprintf("%s: %s %.1f%% (%.1fGB/%.1fGB)\n",
-			disk.Path, bar, disk.UsagePercent, disk.UsedGB, disk.TotalGB,
-		)
+func (m Model) renderGPUs() string {
+	if len(m.monitor.GPUs) == 0 {
+		return ""
 	}
 
-	return panelStyle.Render(content)
+	content := headerStyle.Render(" 🎮 GPU") + "\n"
+
+	for _, gpu := range m.monitor.GPUs {
+		line := lipgloss.NewStyle().Foreground(colorCyan).Render(gpu.Name)
+
+		if gpu.Usage >= 0 {
+			bar := m.renderGradientBar(gpu.Usage, 20)
+			pct := m.colorizePercent(gpu.Usage)
+			line += fmt.Sprintf("  %s %s", bar, pct)
+		}
+
+		if gpu.MemTotal > 0 {
+			memStyle := lipgloss.NewStyle().Foreground(colorPurple).Render
+			line += fmt.Sprintf("  %s", memStyle(fmt.Sprintf("VRAM %d/%d MB", gpu.MemUsed, gpu.MemTotal)))
+		}
+
+		if gpu.Temp >= 0 {
+			tmp := m.colorizeTemp(gpu.Temp)
+			line += fmt.Sprintf("  %s", tmp)
+		}
+
+		content += line + "\n"
+	}
+
+	return panelStyle.Render(strings.TrimSuffix(content, "\n"))
+}
+
+func (m Model) renderDisks() string {
+	content := headerStyle.Render(" 💾 DISKS") + "\n"
+
+	for _, disk := range m.monitor.Disks {
+		bar := m.renderGradientBar(disk.UsagePercent, 25)
+		pct := m.colorizePercent(disk.UsagePercent)
+		path := lipgloss.NewStyle().Foreground(colorCyan).Render(disk.Path)
+		usage := fmt.Sprintf("%.1f/%.1f GB", disk.UsedGB, disk.TotalGB)
+		content += fmt.Sprintf(" %s %s %s  %s\n", path, bar, pct, labelStyle(usage))
+	}
+
+	return panelStyle.Render(strings.TrimSuffix(content, "\n"))
 }
 
 func (m Model) renderProcesses() string {
-	content := headerStyle.Render("⚙️  TOP PROCESSES") + "\n\n"
-	content += fmt.Sprintf("%-8s %-20s %8s %10s %8s\n", "PID", "NAME", "CPU%", "MEM(MB)", "TIME")
-	content += "─────────────────────────────────────────────\n"
+	content := headerStyle.Render(" ⚙ PROCESSES") + "\n"
+	content += lipgloss.NewStyle().Foreground(colorDim).Render(
+		fmt.Sprintf(" %-7s %-19s %6s %8s %7s", "PID", "NAME", "CPU%", "MEM", "UPTIME"),
+	) + "\n"
+	content += lipgloss.NewStyle().Foreground(colorBorder).Render(" " + strings.Repeat("─", 50)) + "\n"
 
-	for _, proc := range m.monitor.Processes {
-		if proc.CPUPercent > 0.1 || proc.MemoryMB > 10 {
-			runtimeStr := fmt.Sprintf("%dh%dm", proc.RuntimeSecs/3600, (proc.RuntimeSecs%3600)/60)
-			content += fmt.Sprintf("%-8d %-20s %7.1f%% %10d %8s\n",
-				proc.PID, proc.Name[:minInt(len(proc.Name), 19)], proc.CPUPercent, proc.MemoryMB, runtimeStr,
-			)
+	for i, proc := range m.monitor.Processes {
+		if proc.CPUPercent < 0.1 && proc.MemoryMB < 10 {
+			continue
 		}
+
+		runtime := fmt.Sprintf("%dh%02dm", proc.RuntimeSecs/3600, (proc.RuntimeSecs%3600)/60)
+		name := proc.Name
+		if len(name) > 19 {
+			name = name[:18] + "…"
+		}
+
+		cpuColor := m.percentColor(proc.CPUPercent)
+		cpuStr := lipgloss.NewStyle().Foreground(cpuColor).Render(fmt.Sprintf("%5.1f", proc.CPUPercent))
+
+		memColor := m.percentColor(proc.MemPercent)
+		memStr := lipgloss.NewStyle().Foreground(memColor).Render(fmt.Sprintf("%6d MB", proc.MemoryMB))
+
+		row := fmt.Sprintf(" %-7d %-19s %s %s %7s",
+			proc.PID, name, cpuStr, memStr, runtime)
+
+		if i%2 == 1 {
+			row = lipgloss.NewStyle().Background(lipgloss.Color("#1f2335")).Render(row)
+		}
+
+		content += row + "\n"
 	}
 
-	return panelStyle.Render(content)
+	return panelStyle.Render(strings.TrimSuffix(content, "\n"))
 }
 
 func (m Model) renderNetwork() string {
-	content := headerStyle.Render("🌐 NETWORK") + "\n\n"
+	content := headerStyle.Render(" 🌐 NETWORK") + "\n"
 
 	for _, iface := range m.monitor.Network {
 		if iface.Name == "lo" {
-			continue // Skip loopback
+			continue
 		}
-		content += fmt.Sprintf("%s: ↓ %.2f MB/s | ↑ %.2f MB/s\n",
-			iface.Name,
-			float64(iface.BytesRecv)/1024/1024,
-			float64(iface.BytesSent)/1024/1024,
+		down := fmt.Sprintf("%.1f MB", float64(iface.BytesRecv)/1024/1024)
+		up := fmt.Sprintf("%.1f MB", float64(iface.BytesSent)/1024/1024)
+		content += fmt.Sprintf(" %s  %s %s  %s %s\n",
+			lipgloss.NewStyle().Foreground(colorCyan).Render(iface.Name),
+			lipgloss.NewStyle().Foreground(colorGreen).Render("▼"),
+			down,
+			lipgloss.NewStyle().Foreground(colorRed).Render("▲"),
+			up,
 		)
 	}
 
-	return panelStyle.Render(content)
+	return panelStyle.Render(strings.TrimSuffix(content, "\n"))
 }
 
-func (m Model) renderProgressBar(percent float64, width int) string {
-	filled := int(float64(width) * percent / 100)
-	empty := width - filled
+func (m Model) renderFooter() string {
+	timeStr := lipgloss.NewStyle().Foreground(colorTeal).Render(m.monitor.LastUpdate.Format("15:04:05"))
+	hint := lipgloss.NewStyle().Foreground(colorDim).Render("q/ctrl+c")
+	return fmt.Sprintf("%s  updated %s", hint, timeStr)
+}
 
-	var color lipgloss.Color
-	if percent < 50 {
-		color = colorsGreen
-	} else if percent < 75 {
-		color = colorYellow
-	} else {
-		color = colorRed
+func (m Model) renderGradientBar(percent float64, width int) string {
+	filled := int(float64(width) * percent / 100)
+	if filled > width {
+		filled = width
 	}
 
-	bar := "[" +
-		lipgloss.NewStyle().Foreground(color).Render(fmt.Sprintf("%s", repeatStr("█", filled))) +
-		reptStr("░", empty) +
-		"]"
+	bar := "["
 
+	for i := 0; i < width; i++ {
+		if i < filled {
+			ratio := float64(i) / float64(width)
+			bar += m.barColor(ratio, percent)
+		} else {
+			bar += lipgloss.NewStyle().Foreground(colorBorder).Render("░")
+		}
+	}
+
+	bar += "]"
 	return bar
 }
 
-func repeatStr(s string, count int) string {
-	result := ""
-	for i := 0; i < count; i++ {
-		result += s
+func (m Model) barColor(ratio, percent float64) string {
+	var c lipgloss.Color
+	switch {
+	case percent < 50:
+		if ratio < 0.5 {
+			c = lipgloss.Color("#3d59a1")
+		} else {
+			c = colorGreen
+		}
+	case percent < 75:
+		if ratio < 0.33 {
+			c = lipgloss.Color("#3d59a1")
+		} else if ratio < 0.66 {
+			c = colorYellow
+		} else {
+			c = colorOrange
+		}
+	default:
+		if ratio < 0.25 {
+			c = lipgloss.Color("#3d59a1")
+		} else if ratio < 0.5 {
+			c = colorOrange
+		} else if ratio < 0.75 {
+			c = colorRed
+		} else {
+			c = lipgloss.Color("#db4b4b")
+		}
 	}
-	return result
+	return lipgloss.NewStyle().Foreground(c).Render("█")
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+func (m Model) colorizePercent(percent float64) string {
+	c := m.percentColor(percent)
+	return lipgloss.NewStyle().Foreground(c).Render(fmt.Sprintf("%5.1f%%", percent))
 }
+
+func (m Model) colorizeTemp(temp float64) string {
+	var c lipgloss.Color
+	switch {
+	case temp < 50:
+		c = colorGreen
+	case temp < 70:
+		c = colorYellow
+	case temp < 85:
+		c = colorOrange
+	default:
+		c = colorRed
+	}
+	return lipgloss.NewStyle().Foreground(c).Render(fmt.Sprintf("%.0f°C", temp))
+}
+
+func (m Model) percentColor(percent float64) lipgloss.Color {
+	switch {
+	case percent < 50:
+		return colorGreen
+	case percent < 75:
+		return colorYellow
+	default:
+		return colorRed
+	}
+}
+
+

@@ -66,6 +66,7 @@ type Monitor struct {
 	Memory    MemStats
 	Swap      SwapStats
 	Disks     []DiskStats
+	GPUs      []GPUStats
 	Processes []ProcessInfo
 	Network   []NetworkStats
 	LastUpdate time.Time
@@ -99,6 +100,8 @@ func (m *Monitor) Update() error {
 	if err := m.updateProcesses(); err != nil {
 		return fmt.Errorf("process error: %w", err)
 	}
+
+	m.updateGPU()
 
 	if err := m.updateNetwork(); err != nil {
 		return fmt.Errorf("network error: %w", err)
@@ -202,18 +205,18 @@ func (m *Monitor) updateProcesses() error {
 			memPercent = 0
 		}
 
-		creatTime, err := p.CreateTime()
+		createTime, err := p.CreateTime()
 		if err != nil {
-			creatTime = 0
+			createTime = 0
 		}
 		runtimeSecs := (time.Now().UnixMilli() - createTime) / 1000
 
 		m.Processes = append(m.Processes, ProcessInfo{
 			PID:        p.Pid,
-			Name:       name,
-			CPUPercent: cpuPercent,
-			MemoryMB:   memInfo.RSS / 1024 / 1024,
-			MemPercent: memPercent,
+			Name:        name,
+			CPUPercent:  cpuPercent,
+			MemoryMB:    memInfo.RSS / 1024 / 1024,
+			MemPercent:  float64(memPercent),
 			RuntimeSecs: runtimeSecs,
 		})
 	}
@@ -229,6 +232,10 @@ func (m *Monitor) updateProcesses() error {
 	}
 
 	return nil
+}
+
+func (m *Monitor) updateGPU() {
+	m.GPUs = detectGPUs()
 }
 
 func (m *Monitor) updateNetwork() error {
