@@ -74,13 +74,17 @@ type Monitor struct {
 	GPUs      []GPUStats
 	Processes []ProcessInfo
 	Network   []NetworkStats
+	Power     PowerStats
 	LastUpdate time.Time
+
+	raplReader *raplReader
 }
 
 // NewMonitor creates a new Monitor instance
 func NewMonitor() *Monitor {
 	return &Monitor{
 		LastUpdate: time.Now(),
+		raplReader: newRAPLReader(),
 	}
 }
 
@@ -113,6 +117,8 @@ func (m *Monitor) Update() error {
 	if err := m.updateNetwork(); err != nil {
 		return fmt.Errorf("network error: %w", err)
 	}
+
+	m.updatePower()
 
 	m.LastUpdate = time.Now()
 	return nil
@@ -278,4 +284,8 @@ func (m *Monitor) updateNetwork() error {
 	}
 
 	return nil
+}
+
+func (m *Monitor) updatePower() {
+	m.Power = m.raplReader.read()
 }

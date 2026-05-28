@@ -148,6 +148,9 @@ func (m Model) renderSystemStats() string {
 		loadStr := m.colorizeLoad(m.monitor.CPU.LoadAvg1, m.monitor.CPU.LoadAvg5, m.monitor.CPU.LoadAvg15, m.monitor.CPU.CoreCount)
 		cpuExtras = append(cpuExtras, fmt.Sprintf("      %s  %s", spark, loadStr))
 	}
+	if p := m.renderPower(); p != "" {
+		cpuExtras = append(cpuExtras, p)
+	}
 	if len(m.monitor.CPU.PerCPU) > 0 {
 		cpuExtras = append(cpuExtras, m.renderPerCoreCores())
 	}
@@ -456,4 +459,46 @@ func (m Model) colorizeLoad(load1, load5, load15 float64, cores int32) string {
 	l15 := lipgloss.NewStyle().Foreground(loadColor(load15)).Render(fmt.Sprintf("%.2f", load15))
 
 	return fmt.Sprintf("Load: %s %s %s", l1, l5, l15)
+}
+
+func (m Model) renderPower() string {
+	p := m.monitor.Power
+	if p.PackageTDP == 0 && p.PackageWatts == 0 {
+		return ""
+	}
+
+	wattStyle := lipgloss.NewStyle().Foreground(colorYellow)
+	label := lipgloss.NewStyle().Foreground(colorDim).Render
+
+	if p.HasRealPower {
+		var parts []string
+		if p.PackageWatts > 0 {
+			parts = append(parts, "PKG "+wattStyle.Render(fmt.Sprintf("%.1fW", p.PackageWatts)))
+		}
+		if p.CoreWatts > 0 {
+			parts = append(parts, "COR "+wattStyle.Render(fmt.Sprintf("%.1fW", p.CoreWatts)))
+		}
+		if p.UncoreWatts > 0 {
+			parts = append(parts, "UNC "+wattStyle.Render(fmt.Sprintf("%.1fW", p.UncoreWatts)))
+		}
+		if p.PackageTDP > 0 {
+			parts = append(parts, label(fmt.Sprintf("(TDP %.0fW)", p.PackageTDP)))
+		}
+		return "      " + strings.Join(parts, "  ")
+	}
+
+	var parts []string
+	if p.PackageTDP > 0 {
+		parts = append(parts, label("TDP")+" "+wattStyle.Render(fmt.Sprintf("%.0fW", p.PackageTDP)))
+	}
+	if p.PackagePL1 > 0 && p.PackagePL1 != p.PackageTDP {
+		parts = append(parts, label("PL1")+" "+wattStyle.Render(fmt.Sprintf("%.0fW", p.PackagePL1)))
+	}
+	if p.PackagePL2 > 0 {
+		parts = append(parts, label("PL2")+" "+wattStyle.Render(fmt.Sprintf("%.0fW", p.PackagePL2)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "      " + strings.Join(parts, "  ")
 }
