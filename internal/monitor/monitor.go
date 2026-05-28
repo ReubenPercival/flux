@@ -101,7 +101,9 @@ func (m *Monitor) Update() error {
 		return fmt.Errorf("process error: %w", err)
 	}
 
-	m.updateGPU()
+	if err := m.updateGPU(); err != nil {
+		return fmt.Errorf("gpu error: %w", err)
+	}
 
 	if err := m.updateNetwork(); err != nil {
 		return fmt.Errorf("network error: %w", err)
@@ -226,7 +228,8 @@ func (m *Monitor) updateProcesses() error {
 		return m.Processes[i].CPUPercent > m.Processes[j].CPUPercent
 	})
 
-	// Keep top 15 processes
+	// Keep top 15 processes to avoid overwhelming display
+	// Note: Processes with CPU% < 0.1 and MEM < 10MB are filtered in UI
 	if len(m.Processes) > 15 {
 		m.Processes = m.Processes[:15]
 	}
@@ -234,8 +237,9 @@ func (m *Monitor) updateProcesses() error {
 	return nil
 }
 
-func (m *Monitor) updateGPU() {
+func (m *Monitor) updateGPU() error {
 	m.GPUs = detectGPUs()
+	return nil
 }
 
 func (m *Monitor) updateNetwork() error {

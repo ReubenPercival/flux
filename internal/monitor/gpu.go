@@ -1,7 +1,10 @@
 package monitor
 
 import (
+	"encoding/csv"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,10 +39,6 @@ func detectGPUs() []GPUStats {
 			continue
 		}
 
-		if strings.Contains(name, "-") {
-			continue
-		}
-
 		if seen[name] {
 			continue
 		}
@@ -56,7 +55,7 @@ func detectGPUs() []GPUStats {
 		}
 
 		gpu := GPUStats{
-			Name:  readGPUName(devPath, vendor, readDeviceID(devPath)),
+			Name:   readGPUName(devPath, vendor, readDeviceID(devPath)),
 			Vendor: vendor,
 		}
 		gpu.Usage = readGPULoad(devPath)
@@ -82,40 +81,49 @@ func readGPUName(devPath, vendor, device string) string {
 }
 
 func readVendor(devPath string) string {
-	v := readFile(filepath.Join(devPath, "vendor"))
-	return strings.TrimPrefix(strings.TrimSpace(v), "0x")
+	v, err := readFile(filepath.Join(devPath, "vendor"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(v, "0x")
 }
 
 func readDeviceID(devPath string) string {
-	d := readFile(filepath.Join(devPath, "device"))
-	return strings.TrimPrefix(strings.TrimSpace(d), "0x")
+	d, err := readFile(filepath.Join(devPath, "device"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(d, "0x")
 }
 
 func readGPULoad(devPath string) float64 {
-	load := readFile(filepath.Join(devPath, "gpu_busy_percent"))
-	if load != "" {
-		v, err := strconv.ParseFloat(strings.TrimSpace(load), 64)
-		if err == nil {
-			return v
-		}
+	load, err := readFile(filepath.Join(devPath, "gpu_busy_percent"))
+	if err != nil {
+		return -1
 	}
-	return -1
+	v, err := strconv.ParseFloat(load, 64)
+	if err != nil {
+		return -1
+	}
+	return v
 }
 
 func readGPUMem(devPath string) (total, used uint64) {
-	totalStr := readFile(filepath.Join(devPath, "mem_info_vram_total"))
-	usedStr := readFile(filepath.Join(devPath, "mem_info_vram_used"))
-
-	if totalStr == "" || usedStr == "" {
+	totalStr, err := readFile(filepath.Join(devPath, "mem_info_vram_total"))
+	if err != nil {
 		return 0, 0
 	}
-
-	t, err := strconv.ParseUint(strings.TrimSpace(totalStr), 10, 64)
+	usedStr, err := readFile(filepath.Join(devPath, "mem_info_vram_used"))
 	if err != nil {
 		return 0, 0
 	}
 
-	u, err := strconv.ParseUint(strings.TrimSpace(usedStr), 10, 64)
+	t, err := strconv.ParseUint(totalStr, 10, 64)
+	if err != nil {
+		return 0, 0
+	}
+
+	u, err := strconv.ParseUint(usedStr, 10, 64)
 	if err != nil {
 		return 0, 0
 	}
@@ -132,11 +140,11 @@ func readGPUTemp(devPath string) float64 {
 
 	for _, h := range hwmonEntries {
 		tempPath := filepath.Join(hwmonDir, h.Name(), "temp1_input")
-		tempStr := readFile(tempPath)
-		if tempStr == "" {
+		tempStr, err := readFile(tempPath)
+		if err != nil {
 			continue
 		}
-		v, err := strconv.ParseInt(strings.TrimSpace(tempStr), 10, 64)
+		v, err := strconv.ParseInt(tempStr, 10, 64)
 		if err != nil {
 			continue
 		}
@@ -151,55 +159,66 @@ func enrichWithNvidiaSMI(gpus []GPUStats) {
 		if gpus[i].Vendor != "10de" {
 			continue
 		}
+	}
 
-		data, err := exec.Command("nvidia-smi",
-			"--query-gpu=name,utilization.gpu,memory.total,memory.used,temperature.gpu",
-			"--format=csv,noheader,nounits",
-		).Output()
+	data, err := exec.Command("nvidia-smi",
+		"--query-gpu=index,name,utilization.gpu,memory.total,memory.used,temperature.gpu",
+		"--format=csv,noheader,nounits",
+	).Output()
+	if err != nil {
+		return
+	}
+
+	reader := csv.NewReader(strings.NewReader(strings.TrimSpace(string(data))))
+	for {
+		parts, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
 		if err != nil {
+			log.Printf("GPU: failed to parse nvidia-smi output: %v", err)
 			continue
 		}
 
-		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-		for _, line := range lines {
-			parts := strings.Split(line, ", ")
-			if len(parts) < 5 {
-				continue
-			}
+		if len(parts) < 6 {
+			continue
+		}
 
-			gpus[i].Name = parts[0]
+		idx, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil || idx < 0 || idx >= len(gpus) {
+			continue
+		}
 
-			usage, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-			if err == nil {
-				gpus[i].Usage = usage
-			}
+		gpus[idx].Name = strings.TrimSpace(parts[1])
 
-			memTotal, err := strconv.ParseUint(strings.TrimSpace(parts[2]), 10, 64)
-			if err == nil {
-				gpus[i].MemTotal = memTotal
-			}
+		usage, err := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
+		if err == nil {
+			gpus[idx].Usage = usage
+		}
 
-			memUsed, err := strconv.ParseUint(strings.TrimSpace(parts[3]), 10, 64)
-			if err == nil {
-				gpus[i].MemUsed = memUsed
-			}
+		memTotal, err := strconv.ParseUint(strings.TrimSpace(parts[3]), 10, 64)
+		if err == nil {
+			gpus[idx].MemTotal = memTotal
+		}
 
-			temp, err := strconv.ParseFloat(strings.TrimSpace(parts[4]), 64)
-			if err == nil {
-				gpus[i].Temp = temp
-			}
+		memUsed, err := strconv.ParseUint(strings.TrimSpace(parts[4]), 10, 64)
+		if err == nil {
+			gpus[idx].MemUsed = memUsed
+		}
 
-			break
+		temp, err := strconv.ParseFloat(strings.TrimSpace(parts[5]), 64)
+		if err == nil {
+			gpus[idx].Temp = temp
 		}
 	}
 }
 
-func readFile(path string) string {
+func readFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return strings.TrimSpace(string(data))
+	return strings.TrimSpace(string(data)), nil
 }
 
 func fallbackGPUVendorName(vendor, device string) string {
