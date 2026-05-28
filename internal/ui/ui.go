@@ -154,7 +154,7 @@ func (m Model) renderGPUs() string {
 		return ""
 	}
 
-	content := headerStyle.Render(" 🎮 GPU") + "\n"
+	content := headerStyle.Render(" GPU") + "\n"
 
 	for _, gpu := range m.monitor.GPUs {
 		line := lipgloss.NewStyle().Foreground(colorCyan).Render(gpu.Name)
@@ -182,7 +182,7 @@ func (m Model) renderGPUs() string {
 }
 
 func (m Model) renderDisks() string {
-	content := headerStyle.Render(" 💾 DISKS") + "\n"
+	content := headerStyle.Render(" DISKS") + "\n"
 
 	for _, disk := range m.monitor.Disks {
 		bar := m.renderGradientBar(disk.UsagePercent, 25)
@@ -196,7 +196,7 @@ func (m Model) renderDisks() string {
 }
 
 func (m Model) renderProcesses() string {
-	content := headerStyle.Render(" ⚙ PROCESSES") + "\n"
+	content := headerStyle.Render(" PROCESSES") + "\n"
 	content += lipgloss.NewStyle().Foreground(colorDim).Render(
 		fmt.Sprintf(" %-7s %-19s %6s %8s %7s", "PID", "NAME", "CPU%", "MEM", "UPTIME"),
 	) + "\n"
@@ -233,7 +233,7 @@ func (m Model) renderProcesses() string {
 }
 
 func (m Model) renderNetwork() string {
-	content := headerStyle.Render(" 🌐 NETWORK") + "\n"
+	content := headerStyle.Render(" NETWORK") + "\n"
 
 	for _, iface := range m.monitor.Network {
 		if iface.Name == "lo" {
