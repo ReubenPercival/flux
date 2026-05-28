@@ -7,6 +7,7 @@ import (
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/load"
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
@@ -16,6 +17,10 @@ import (
 type CPUStats struct {
 	UsagePercent float64
 	CoreCount    int32
+	PerCPU       []float64
+	LoadAvg1     float64
+	LoadAvg5     float64
+	LoadAvg15    float64
 }
 
 // MemStats holds memory information
@@ -69,13 +74,17 @@ type Monitor struct {
 	GPUs      []GPUStats
 	Processes []ProcessInfo
 	Network   []NetworkStats
+	Power     PowerStats
 	LastUpdate time.Time
+
+	raplReader *raplReader
 }
 
 // NewMonitor creates a new Monitor instance
 func NewMonitor() *Monitor {
 	return &Monitor{
 		LastUpdate: time.Now(),
+		raplReader: newRAPLReader(),
 	}
 }
 
@@ -109,12 +118,14 @@ func (m *Monitor) Update() error {
 		return fmt.Errorf("network error: %w", err)
 	}
 
+	m.updatePower()
+
 	m.LastUpdate = time.Now()
 	return nil
 }
 
 func (m *Monitor) updateCPU() error {
-	percent, err := cpu.Percent(time.Second, false)
+	percents, err := cpu.Percent(time.Second, true)
 	if err != nil {
 		return err
 	}
@@ -124,8 +135,23 @@ func (m *Monitor) updateCPU() error {
 		return err
 	}
 
-	m.CPU.UsagePercent = percent[0]
+	var total float64
+	for _, p := range percents {
+		total += p
+	}
+	avg := total / float64(len(percents))
+
+	m.CPU.PerCPU = percents
+	m.CPU.UsagePercent = avg
 	m.CPU.CoreCount = int32(count)
+
+	avgLoad, err := load.Avg()
+	if err == nil {
+		m.CPU.LoadAvg1 = avgLoad.Load1
+		m.CPU.LoadAvg5 = avgLoad.Load5
+		m.CPU.LoadAvg15 = avgLoad.Load15
+	}
+
 	return nil
 }
 
@@ -258,4 +284,8 @@ func (m *Monitor) updateNetwork() error {
 	}
 
 	return nil
+}
+
+func (m *Monitor) updatePower() {
+	m.Power = m.raplReader.read()
 }
