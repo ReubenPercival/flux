@@ -1,11 +1,6 @@
 # Flux
 
-A modern, real-time system monitor for the terminal. Built with Go and Bubble Tea for a responsive, beautiful TUI experience.
-
-![License](https://img.shields.io/badge/License-GPL3-blue.svg)
-![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go)
-![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-success)
-
+A modern, real-time system monitor for the terminal. Built with GoLang  and Bubble Tea (https://github.com/charmbracelet/bubbletea)   for a responsive, beautiful TUI experience.
 ## Features
 
 ### Real-time System Monitoring
@@ -21,15 +16,6 @@ A modern, real-time system monitor for the terminal. Built with Go and Bubble Te
 - **Live Updates** - Automatic refresh every second
 - **Smart Filtering** - Shows only processes with meaningful usage
 
-### Beautiful Terminal Interface
-- **Color-Coded Status** 
-  - Green: 0-50% (healthy)
-  - Yellow: 50-75% (caution)
-  - Red: 75-100% (critical)
-- **Visual Progress Bars** - Easy-to-scan resource utilization
-- **Responsive Layout** - Adapts to terminal size
-- **Real-time Updates** - 1-second refresh interval
-
 ### Performance
 - **Lightweight** - ~5MB binary, minimal dependencies
 - **Low Overhead** - ~1-2% CPU usage under normal operation
@@ -40,7 +26,7 @@ A modern, real-time system monitor for the terminal. Built with Go and Bubble Te
 
 ### Prerequisites
 - Go 1.21 or higher
-- Linux, macOS, or Windows
+- Linux
 
 ### Installation
 
@@ -49,52 +35,6 @@ A modern, real-time system monitor for the terminal. Built with Go and Bubble Te
 git clone https://github.com/ReubenPercival/flux.git
 cd flux
 make install
-```
-
-**Option 2: Using Go**
-```bash
-go install github.com/ReubenPercival/flux@latest
-```
-
-**Option 3: Manual Build**
-```bash
-git clone https://github.com/ReubenPercival/flux.git
-cd flux
-go mod download
-go build -o flux .
-./flux
-```
-
-### Running
-
-```bash
-flux
-```
-
-## Controls
-
-| Key | Action |
-|-----|--------|
-| `q` | Quit application |
-| `Ctrl+C` | Quit application |
-
-## Project Structure
-
-```
-flux/
-├── main.go                 # Application entry point
-├── go.mod                  # Go module definition
-├── go.sum                  # Dependency checksums
-├── Makefile               # Build automation
-├── README.md              # This file
-├── LICENSE                # GPL-3.0 License
-├── .gitignore             # Git ignore rules
-└── internal/
-    ├── monitor/           # System monitoring module
-    │   └── monitor.go     # gopsutil integration & data collection
-    └── ui/                # Terminal UI module
-        ├── ui.go          # Bubble Tea UI components
-        └── helpers.go     # Utility functions
 ```
 
 ## Development
@@ -153,66 +93,16 @@ go run main.go
 
 All dependencies are automatically managed via `go.mod`.
 
-## Features Showcase
-
-### System Overview Panel
-```
-┌─ FLUX ─────────────────────────────────────────────┐
-│ CPU:  ████████░░ 82% (8 cores)                     │
-│ MEM:  ██████░░░░ 61% (16GB/26GB)                   │
-│ SWAP: ░░░░░░░░░░ 0% (0MB/2GB)                      │
-└────────────────────────────────────────────────────┘
-```
-
-### Disk Usage Panel
-```
-┌─ DISK USAGE ───────────────────────────────────────┐
-│ /     : ██████████░░ 82% (412GB/500GB)             │
-│ /home : ████████░░░░ 68% (680GB/1TB)               │
-│ /var  : ███░░░░░░░░░ 27% (27GB/100GB)              │
-└────────────────────────────────────────────────────┘
-```
-
-### Top Processes Panel
-```
-┌─ TOP PROCESSES ────────────────────────────────────┐
-│ PID      NAME                     CPU%       MEM   │
-│ ─────────────────────────────────────────────────  │
-│ 2847     Firefox               12.5%      2.4GB   │
-│ 1923     Go Build               8.2%      512MB   │
-│ 4012     Node                   4.1%      1.1GB   │
-└────────────────────────────────────────────────────┘
-```
-
-## Roadmap
-
-### In Development
-- [ ] Keyboard navigation
-- [ ] Process filtering & searching
-- [ ] Sort by different metrics (CPU, memory, uptime)
-- [ ] Configuration file support
-
-### Planned Features
-- [ ] Historical data visualization
-- [ ] Custom theme support
-- [ ] GPU monitoring (NVIDIA/AMD)
-- [ ] Temperature sensors
-- [ ] I/O statistics per process
-- [ ] Export to CSV/JSON
-- [ ] Custom color schemes
-- [ ] Lightweight mode (reduced refresh)
-- [ ] Process tree view
-- [ ] Log file viewer integration
 
 ## Troubleshooting
 
 ### High CPU Usage
 - Flux is designed to be lightweight. If you see high usage, check if you have many processes with high activity.
-- Try reducing terminal refresh rate in future config options.
+
 
 ### Missing Process Information
 - Some processes may require elevated permissions to access full details
-- Run with `sudo` for complete system information (not recommended for security)
+
 
 ### Slow on Startup
 - First run gathers all process information
@@ -223,8 +113,6 @@ All dependencies are automatically managed via `go.mod`.
 | OS | Status | Notes |
 |-----|--------|-------|
 | Linux | Fully Supported | All features available |
-| macOS | Fully Supported | All features available |
-| Windows | Fully Supported | All features available |
 
 ## Performance Specifications
 
@@ -234,16 +122,6 @@ All dependencies are automatically managed via `go.mod`.
 - **Refresh Rate**: 1 second (configurable in future)
 - **Max Processes**: 1000+ (tested on production systems)
 
-## Configuration (Planned)
-
-Future versions will support:
-```yaml
-# ~/.config/flux/config.yml
-refresh_rate: 1s
-process_limit: 15
-show_swap: true
-theme: "dark"
-```
 
 ## Contributing
 
@@ -254,6 +132,7 @@ Contributions are welcome! Here's how to get started:
 3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
 4. **Push** to the branch (`git push origin feature/amazing-feature`)
 5. **Open** a Pull Request
+OR send it over email. I accept patch over email.
 
 ### Development Guidelines
 - Write clean, idiomatic Go code
@@ -304,6 +183,6 @@ Want to understand how Flux works?
 
 ---
 
-Made with care by [ReubenPercival](https://github.com/ReubenPercival)
+Made with hatred by [ReubenPercival](https://github.com/ReubenPercival)
 
 If you find Flux useful, please consider giving it a star!
