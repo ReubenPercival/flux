@@ -22,6 +22,14 @@ type GPUStats struct {
 }
 
 func detectGPUs() []GPUStats {
+	gpus := detectGPUsSysfs()
+	if len(gpus) > 0 {
+		enrichWithNvidiaSMI(gpus)
+	}
+	return gpus
+}
+
+func detectGPUsSysfs() []GPUStats {
 	gpus := []GPUStats{}
 
 	drmDir := "/sys/class/drm"
@@ -63,10 +71,6 @@ func detectGPUs() []GPUStats {
 		gpu.Temp = readGPUTemp(devPath)
 
 		gpus = append(gpus, gpu)
-	}
-
-	if len(gpus) > 0 {
-		enrichWithNvidiaSMI(gpus)
 	}
 
 	return gpus
@@ -156,10 +160,15 @@ func readGPUTemp(devPath string) float64 {
 }
 
 func enrichWithNvidiaSMI(gpus []GPUStats) {
-	for i := range gpus {
-		if gpus[i].Vendor != "10de" {
-			continue
+	hasNVIDIA := false
+	for _, g := range gpus {
+		if g.Vendor == "10de" {
+			hasNVIDIA = true
+			break
 		}
+	}
+	if !hasNVIDIA {
+		return
 	}
 
 	data, err := exec.Command("nvidia-smi",

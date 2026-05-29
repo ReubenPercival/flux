@@ -60,6 +60,7 @@ type Model struct {
 	spinner    spinner.Model
 	cpuHistory []float64
 	width      int
+	height     int
 }
 
 // panelContentWidth returns chars available inside a panel's content area.
@@ -173,6 +174,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -216,6 +218,31 @@ func (m Model) View() string {
 	sections = append(sections, procs)
 	sections = append(sections, netw)
 
+	// Simple line count estimation for height-aware truncation
+	estLines := func(s string) int {
+		return strings.Count(s, "\n") + 1
+	}
+
+	titleHeight := estLines(fluxTitle)
+	footerHeight := estLines(footer)
+	// appStyle: top+bottom border (2) + top+bottom padding (2) = 4 vertical overhead
+	// panelStyle per section: top+bottom border (2) + top+bottom padding (0, but lipgloss adds ~1)
+	overhead := 4 + 2*len(sections)
+
+	totalEst := titleHeight + overhead + footerHeight
+	for _, s := range sections {
+		totalEst += estLines(s)
+	}
+
+	if m.height > 0 && totalEst > m.height {
+		// Remove sections from the end until it fits
+		for m.height > 0 && totalEst > m.height && len(sections) > 0 {
+			last := sections[len(sections)-1]
+			totalEst -= estLines(last) + 2 // panel overhead
+			sections = sections[:len(sections)-1]
+		}
+	}
+
 	body := lipgloss.JoinVertical(lipgloss.Top, sections...)
 
 	return appStyle.Render(
@@ -252,14 +279,17 @@ func (m Model) renderSystemStats() string {
 	memLine := fmt.Sprintf("%s %s  %s (%dMB/%dMB)",
 		labelStyle(" MEM"), memBar, memPct, m.monitor.Memory.UsedMB, m.monitor.Memory.TotalMB)
 
-	swapBar := m.renderGradientBar(m.monitor.Swap.UsagePercent, bw)
-	swapPct := m.colorizePercent(m.monitor.Swap.UsagePercent)
-	swapLine := fmt.Sprintf("%s %s  %s (%dMB/%dMB)",
-		labelStyle("SWAP"), swapBar, swapPct, m.monitor.Swap.UsedMB, m.monitor.Swap.TotalMB)
-
 	parts := []string{cpuLine}
 	parts = append(parts, cpuExtras...)
-	parts = append(parts, memLine, swapLine)
+	parts = append(parts, memLine)
+
+	if m.monitor.Swap.TotalMB > 0 {
+		swapBar := m.renderGradientBar(m.monitor.Swap.UsagePercent, bw)
+		swapPct := m.colorizePercent(m.monitor.Swap.UsagePercent)
+		swapLine := fmt.Sprintf("%s %s  %s (%dMB/%dMB)",
+			labelStyle("SWAP"), swapBar, swapPct, m.monitor.Swap.UsedMB, m.monitor.Swap.TotalMB)
+		parts = append(parts, swapLine)
+	}
 
 	return panelStyle.Render(strings.Join(parts, "\n"))
 }
@@ -354,8 +384,8 @@ func (m Model) renderNetwork() string {
 		if iface.Name == "lo" {
 			continue
 		}
-		down := fmt.Sprintf("%.1f MB", float64(iface.BytesRecv)/1024/1024)
-		up := fmt.Sprintf("%.1f MB", float64(iface.BytesSent)/1024/1024)
+		down := m.formatThroughput(iface.ThroughputRecv)
+		up := m.formatThroughput(iface.ThroughputSent)
 		content += fmt.Sprintf(" %s  %s %s  %s %s\n",
 			lipgloss.NewStyle().Foreground(colorCyan).Render(iface.Name),
 			lipgloss.NewStyle().Foreground(colorGreen).Render("▼"),
@@ -555,7 +585,7 @@ func (m Model) colorizeLoad(load1, load5, load15 float64, cores int32) string {
 
 func (m Model) renderPower() string {
 	p := m.monitor.Power
-	if p.PackageTDP == 0 && p.PackageWatts == 0 {
+	if p.PackageTDP == 0 && p.PackageWatts == 0 && !p.HasRealPower {
 		return ""
 	}
 
@@ -564,19 +594,41 @@ func (m Model) renderPower() string {
 
 	if p.HasRealPower {
 		var parts []string
-		if p.PackageWatts > 0 {
-			parts = append(parts, "PKG "+wattStyle.Render(fmt.Sprintf("%.1fW", p.PackageWatts)))
+
+		type zoneEntry struct {
+			label string
+			value float64
+			color lipgloss.Color
 		}
-		if p.CoreWatts > 0 {
-			parts = append(parts, "COR "+wattStyle.Render(fmt.Sprintf("%.1fW", p.CoreWatts)))
+		zones := []zoneEntry{
+			{"PKG", p.PackageWatts, colorYellow},
+			{"COR", p.CoreWatts, colorCyan},
+			{"UNC", p.UncoreWatts, colorPurple},
+			{"DRAM", p.DramWatts, colorGreen},
+			{"PSys", p.PsysWatts, colorTeal},
+			{"GPU", p.GpuWatts, colorOrange},
 		}
-		if p.UncoreWatts > 0 {
-			parts = append(parts, "UNC "+wattStyle.Render(fmt.Sprintf("%.1fW", p.UncoreWatts)))
+
+		for _, z := range zones {
+			if z.value > 0 {
+				style := lipgloss.NewStyle().Foreground(z.color)
+				parts = append(parts, z.label+" "+style.Render(fmt.Sprintf("%.1fW", z.value)))
+			}
 		}
+
+		if p.TotalWatts > 0 {
+			totalStyle := lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
+			parts = append(parts, "TOT "+totalStyle.Render(fmt.Sprintf("%.1fW", p.TotalWatts)))
+		}
+
 		if p.PackageTDP > 0 {
 			parts = append(parts, label(fmt.Sprintf("(TDP %.0fW)", p.PackageTDP)))
 		}
-		return "      " + strings.Join(parts, "  ")
+
+		if len(parts) > 0 {
+			return "      " + strings.Join(parts, "  ")
+		}
+		return ""
 	}
 
 	var parts []string
@@ -593,4 +645,24 @@ func (m Model) renderPower() string {
 		return ""
 	}
 	return "      " + strings.Join(parts, "  ")
+}
+
+func (m Model) formatThroughput(bps float64) string {
+	var val float64
+	var unit string
+	switch {
+	case bps >= 1024*1024*1024:
+		val = bps / 1024 / 1024 / 1024
+		unit = "GB/s"
+	case bps >= 1024*1024:
+		val = bps / 1024 / 1024
+		unit = "MB/s"
+	case bps >= 1024:
+		val = bps / 1024
+		unit = "KB/s"
+	default:
+		val = bps
+		unit = "B/s"
+	}
+	return lipgloss.NewStyle().Foreground(colorDim).Render(fmt.Sprintf("%6.1f %s", val, unit))
 }
