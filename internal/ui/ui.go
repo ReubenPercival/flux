@@ -59,6 +59,93 @@ type Model struct {
 	monitor    *monitor.Monitor
 	spinner    spinner.Model
 	cpuHistory []float64
+	width      int
+}
+
+// panelContentWidth returns chars available inside a panel's content area.
+// appStyle border(1+1)=2 + padding(2+2)=4 = 6 consumed.
+// panelStyle border(1+1)=2 + padding(1+1)=2 = 4 consumed.
+// Total overhead from both styles = 10.
+func (m Model) panelContentWidth() int {
+	if m.width <= 0 {
+		return 66
+	}
+	if a := m.width - 10; a > 20 {
+		return a
+	}
+	return 20
+}
+
+// mainBarWidth is the number of fillable chars inside bar brackets []
+// for CPU / MEM / SWAP lines. The tightest constraint is the MEM/SWAP
+// suffix " (99999MB/99999MB)" which adds ~36 chars of fixed overhead.
+func (m Model) mainBarWidth() int {
+	w := m.panelContentWidth() - 38
+	switch {
+	case w < 8:
+		return 8
+	case w > 80:
+		return 80
+	default:
+		return w
+	}
+}
+
+func (m Model) diskBarWidth() int {
+	w := m.panelContentWidth() - 40
+	switch {
+	case w < 6:
+		return 6
+	case w > 70:
+		return 70
+	default:
+		return w
+	}
+}
+
+func (m Model) gpuBarWidth() int {
+	// GPU lines vary a lot (names + VRAM + temp), keep bar modest
+	w := m.panelContentWidth() * 3 / 10
+	switch {
+	case w < 6:
+		return 6
+	case w > 50:
+		return 50
+	default:
+		return w
+	}
+}
+
+func (m Model) miniBarWidth() int {
+	w := m.panelContentWidth() / 10
+	switch {
+	case w < 3:
+		return 3
+	case w > 15:
+		return 15
+	default:
+		return w
+	}
+}
+
+func (m Model) procNameWidth() int {
+	w := m.panelContentWidth() - 40
+	switch {
+	case w < 8:
+		return 8
+	case w > 35:
+		return 35
+	default:
+		return w
+	}
+}
+
+func (m Model) procSepWidth() int {
+	w := m.panelContentWidth() - 1
+	if w < 10 {
+		return 10
+	}
+	return w
 }
 
 func NewModel(mon *monitor.Monitor) Model {
@@ -84,6 +171,9 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -136,7 +226,8 @@ func (m Model) View() string {
 }
 
 func (m Model) renderSystemStats() string {
-	cpuBar := m.renderGradientBar(m.monitor.CPU.UsagePercent, 30)
+	bw := m.mainBarWidth()
+	cpuBar := m.renderGradientBar(m.monitor.CPU.UsagePercent, bw)
 	cpuPct := m.colorizePercent(m.monitor.CPU.UsagePercent)
 	cpuLine := fmt.Sprintf("%s %s  %s (%d cores)",
 		labelStyle(" CPU"), cpuBar, cpuPct, m.monitor.CPU.CoreCount)
@@ -144,7 +235,7 @@ func (m Model) renderSystemStats() string {
 	var cpuExtras []string
 	if len(m.cpuHistory) > 0 {
 		spark := lipgloss.NewStyle().Foreground(colorTeal).Render(
-			m.renderSparkline(m.cpuHistory, 30))
+			m.renderSparkline(m.cpuHistory, bw))
 		loadStr := m.colorizeLoad(m.monitor.CPU.LoadAvg1, m.monitor.CPU.LoadAvg5, m.monitor.CPU.LoadAvg15, m.monitor.CPU.CoreCount)
 		cpuExtras = append(cpuExtras, fmt.Sprintf("      %s  %s", spark, loadStr))
 	}
@@ -152,15 +243,16 @@ func (m Model) renderSystemStats() string {
 		cpuExtras = append(cpuExtras, p)
 	}
 	if len(m.monitor.CPU.PerCPU) > 0 {
-		cpuExtras = append(cpuExtras, m.renderPerCoreCores())
+		cpuExtras = append(cpuExtras, m.renderPerCoreCPU())
 	}
 
-	memBar := m.renderGradientBar(m.monitor.Memory.UsagePercent, 30)
+	bw = m.mainBarWidth()
+	memBar := m.renderGradientBar(m.monitor.Memory.UsagePercent, bw)
 	memPct := m.colorizePercent(m.monitor.Memory.UsagePercent)
 	memLine := fmt.Sprintf("%s %s  %s (%dMB/%dMB)",
 		labelStyle(" MEM"), memBar, memPct, m.monitor.Memory.UsedMB, m.monitor.Memory.TotalMB)
 
-	swapBar := m.renderGradientBar(m.monitor.Swap.UsagePercent, 30)
+	swapBar := m.renderGradientBar(m.monitor.Swap.UsagePercent, bw)
 	swapPct := m.colorizePercent(m.monitor.Swap.UsagePercent)
 	swapLine := fmt.Sprintf("%s %s  %s (%dMB/%dMB)",
 		labelStyle("SWAP"), swapBar, swapPct, m.monitor.Swap.UsedMB, m.monitor.Swap.TotalMB)
@@ -183,7 +275,7 @@ func (m Model) renderGPUs() string {
 		line := lipgloss.NewStyle().Foreground(colorCyan).Render(gpu.Name)
 
 		if gpu.Usage >= 0 {
-			bar := m.renderGradientBar(gpu.Usage, 20)
+			bar := m.renderGradientBar(gpu.Usage, m.gpuBarWidth())
 			pct := m.colorizePercent(gpu.Usage)
 			line += fmt.Sprintf("  %s %s", bar, pct)
 		}
@@ -208,7 +300,7 @@ func (m Model) renderDisks() string {
 	content := headerStyle.Render(" DISKS") + "\n"
 
 	for _, disk := range m.monitor.Disks {
-		bar := m.renderGradientBar(disk.UsagePercent, 25)
+		bar := m.renderGradientBar(disk.UsagePercent, m.diskBarWidth())
 		pct := m.colorizePercent(disk.UsagePercent)
 		path := lipgloss.NewStyle().Foreground(colorCyan).Render(disk.Path)
 		usage := fmt.Sprintf("%.1f/%.1f GB", disk.UsedGB, disk.TotalGB)
@@ -220,10 +312,11 @@ func (m Model) renderDisks() string {
 
 func (m Model) renderProcesses() string {
 	content := headerStyle.Render(" PROCESSES") + "\n"
+	nw := m.procNameWidth()
 	content += lipgloss.NewStyle().Foreground(colorDim).Render(
-		fmt.Sprintf(" %-7s %-19s %6s %8s %7s", "PID", "NAME", "CPU%", "MEM", "UPTIME"),
+		fmt.Sprintf(" %-7s %-*s %6s %8s %7s", "PID", nw, "NAME", "CPU%", "MEM", "UPTIME"),
 	) + "\n"
-	content += lipgloss.NewStyle().Foreground(colorBorder).Render(" " + strings.Repeat("─", 50)) + "\n"
+	content += lipgloss.NewStyle().Foreground(colorBorder).Render(" " + strings.Repeat("─", m.procSepWidth())) + "\n"
 
 	for i, proc := range m.monitor.Processes {
 		if proc.CPUPercent < 0.1 && proc.MemoryMB < 10 {
@@ -232,8 +325,8 @@ func (m Model) renderProcesses() string {
 
 		runtime := fmt.Sprintf("%dh%02dm", proc.RuntimeSecs/3600, (proc.RuntimeSecs%3600)/60)
 		name := proc.Name
-		if len(name) > 19 {
-			name = name[:18] + "…"
+		if len(name) > nw {
+			name = name[:nw-1] + "…"
 		}
 
 		cpuColor := m.percentColor(proc.CPUPercent)
@@ -242,8 +335,7 @@ func (m Model) renderProcesses() string {
 		memColor := m.percentColor(proc.MemPercent)
 		memStr := lipgloss.NewStyle().Foreground(memColor).Render(fmt.Sprintf("%6d MB", proc.MemoryMB))
 
-		row := fmt.Sprintf(" %-7d %-19s %s %s %7s",
-			proc.PID, name, cpuStr, memStr, runtime)
+		row := fmt.Sprintf(" %-7d %-*s %s %s %7s", proc.PID, nw, name, cpuStr, memStr, runtime)
 
 		if i%2 == 1 {
 			row = lipgloss.NewStyle().Background(lipgloss.Color("#1f2335")).Render(row)
@@ -412,13 +504,13 @@ func (m Model) renderMiniBar(percent float64, width int) string {
 	return sb.String()
 }
 
-func (m Model) renderPerCoreCores() string {
+func (m Model) renderPerCoreCPU() string {
 	cores := m.monitor.CPU.PerCPU
 	if len(cores) == 0 {
 		return ""
 	}
 
-	barWidth := 8
+	barWidth := m.miniBarWidth()
 	var rows []string
 
 	for i := 0; i < len(cores); i += 2 {

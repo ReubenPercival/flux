@@ -128,6 +128,7 @@ func readGPUMem(devPath string) (total, used uint64) {
 		return 0, 0
 	}
 
+	// sysfs values are in bytes; convert to mebibytes (MiB)
 	return t / 1024 / 1024, u / 1024 / 1024
 }
 
@@ -196,6 +197,7 @@ func enrichWithNvidiaSMI(gpus []GPUStats) {
 			gpus[idx].Usage = usage
 		}
 
+		// nvidia-smi returns memory in MiB (same unit as sysfs readGPUMem)
 		memTotal, err := strconv.ParseUint(strings.TrimSpace(parts[3]), 10, 64)
 		if err == nil {
 			gpus[idx].MemTotal = memTotal

@@ -139,6 +139,9 @@ func (m *Monitor) updateCPU() error {
 	for _, p := range percents {
 		total += p
 	}
+	if len(percents) == 0 {
+		return fmt.Errorf("cpu.Percent returned no data")
+	}
 	avg := total / float64(len(percents))
 
 	m.CPU.PerCPU = percents
