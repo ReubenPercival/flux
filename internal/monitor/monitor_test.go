@@ -104,7 +104,9 @@ func TestSortProcessesByCPU(t *testing.T) {
 
 func TestMaxProcesses(t *testing.T) {
 	m := NewMonitor()
-	m.Update()
+	if err := m.Update(); err != nil {
+		t.Fatalf("Update() returned error: %v", err)
+	}
 	if len(m.Processes) > 15 {
 		t.Errorf("expected at most 15 processes, got %d", len(m.Processes))
 	}

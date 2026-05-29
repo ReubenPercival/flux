@@ -60,9 +60,11 @@ type ProcessInfo struct {
 
 // NetworkStats holds network interface statistics
 type NetworkStats struct {
-	Name      string
-	BytesSent uint64
-	BytesRecv uint64
+	Name           string
+	BytesSent      uint64
+	BytesRecv      uint64
+	ThroughputSent float64
+	ThroughputRecv float64
 }
 
 // Monitor tracks system statistics
@@ -77,14 +79,18 @@ type Monitor struct {
 	Power     PowerStats
 	LastUpdate time.Time
 
-	raplReader *raplReader
+	raplReader      *raplReader
+	lastNetwork     map[string]NetworkStats
+	lastNetworkTime time.Time
+	lastNvidiaTime  time.Time
 }
 
 // NewMonitor creates a new Monitor instance
 func NewMonitor() *Monitor {
 	return &Monitor{
-		LastUpdate: time.Now(),
-		raplReader: newRAPLReader(),
+		LastUpdate:  time.Now(),
+		raplReader:  newRAPLReader(),
+		lastNetwork: make(map[string]NetworkStats),
 	}
 }
 
@@ -267,7 +273,14 @@ func (m *Monitor) updateProcesses() error {
 }
 
 func (m *Monitor) updateGPU() error {
-	m.GPUs = detectGPUs()
+	gpus := detectGPUsSysfs()
+
+	if time.Since(m.lastNvidiaTime) > 5*time.Second {
+		enrichWithNvidiaSMI(gpus)
+		m.lastNvidiaTime = time.Now()
+	}
+
+	m.GPUs = gpus
 	return nil
 }
 
@@ -277,15 +290,32 @@ func (m *Monitor) updateNetwork() error {
 		return err
 	}
 
+	now := time.Now()
+	elapsed := now.Sub(m.lastNetworkTime).Seconds()
+	if m.lastNetworkTime.IsZero() || elapsed <= 0 {
+		elapsed = 1
+	}
+
 	m.Network = make([]NetworkStats, 0)
 	for _, iface := range interfaces {
-		m.Network = append(m.Network, NetworkStats{
+		ns := NetworkStats{
 			Name:      iface.Name,
 			BytesSent: iface.BytesSent,
 			BytesRecv: iface.BytesRecv,
-		})
+		}
+
+		if prev, ok := m.lastNetwork[iface.Name]; ok {
+			sentDelta := iface.BytesSent - prev.BytesSent
+			recvDelta := iface.BytesRecv - prev.BytesRecv
+			ns.ThroughputSent = float64(sentDelta) / elapsed
+			ns.ThroughputRecv = float64(recvDelta) / elapsed
+		}
+
+		m.lastNetwork[iface.Name] = ns
+		m.Network = append(m.Network, ns)
 	}
 
+	m.lastNetworkTime = now
 	return nil
 }
 

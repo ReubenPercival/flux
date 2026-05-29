@@ -15,6 +15,10 @@ type PowerStats struct {
 	PackageWatts float64
 	CoreWatts    float64
 	UncoreWatts  float64
+	DramWatts    float64
+	PsysWatts    float64
+	GpuWatts     float64
+	TotalWatts   float64
 	PackageTDP   float64
 	PackagePL1   float64
 	PackagePL2   float64
@@ -115,21 +119,35 @@ func (r *raplReader) read() PowerStats {
 	pkgPath := pickPackageZone(zones)
 	corePath := zoneMap["core"]
 	uncorePath := zoneMap["uncore"]
+	dramPath := zoneMap["dram"]
+	psysPath := zoneMap["psys"]
+	gpuPath := zoneMap["gpu"]
 
 	if pkgPath != "" {
 		stats.PackageTDP, stats.PackagePL1, stats.PackagePL2 = readPackagePowerLimits(pkgPath)
+	}
+
+	zoneTargets := map[string]struct {
+		path string
+		dest *float64
+	}{
+		"package-0": {pkgPath, &stats.PackageWatts},
+		"core":      {corePath, &stats.CoreWatts},
+		"uncore":    {uncorePath, &stats.UncoreWatts},
+		"dram":      {dramPath, &stats.DramWatts},
+		"psys":      {psysPath, &stats.PsysWatts},
+		"gpu":       {gpuPath, &stats.GpuWatts},
 	}
 
 	now := time.Now()
 
 	// First call: store baseline energies and return (no delta yet)
 	if r.prevTime.IsZero() {
-		for _, key := range []string{"package-0", "core", "uncore"} {
-			path, ok := zoneMap[key]
-			if !ok || path == "" {
+		for key, t := range zoneTargets {
+			if t.path == "" {
 				continue
 			}
-			energy, err := readUint(filepath.Join(path, "energy_uj"))
+			energy, err := readUint(filepath.Join(t.path, "energy_uj"))
 			if err != nil {
 				continue
 			}
@@ -146,18 +164,11 @@ func (r *raplReader) read() PowerStats {
 		return stats
 	}
 
-	for key, rd := range map[string]struct {
-		path string
-		dest *float64
-	}{
-		"package-0": {pkgPath, &stats.PackageWatts},
-		"core":      {corePath, &stats.CoreWatts},
-		"uncore":    {uncorePath, &stats.UncoreWatts},
-	} {
-		if rd.path == "" {
+	for key, t := range zoneTargets {
+		if t.path == "" {
 			continue
 		}
-		energy, err := readUint(filepath.Join(rd.path, "energy_uj"))
+		energy, err := readUint(filepath.Join(t.path, "energy_uj"))
 		if err != nil {
 			continue
 		}
@@ -168,7 +179,7 @@ func (r *raplReader) read() PowerStats {
 			continue
 		}
 
-		maxEnergy, _ := readUint(filepath.Join(rd.path, "max_energy_range_uj"))
+		maxEnergy, _ := readUint(filepath.Join(t.path, "max_energy_range_uj"))
 		var delta uint64
 		if energy >= prev {
 			delta = energy - prev
@@ -180,16 +191,23 @@ func (r *raplReader) read() PowerStats {
 
 		watts := float64(delta) / elapsed / 1e6
 		if !math.IsInf(watts, 0) && !math.IsNaN(watts) {
-			*rd.dest = math.Round(watts*10) / 10
+			*t.dest = math.Round(watts*10) / 10
 			hasAny = true
 		}
 
 		r.prevEnergy[key] = energy
 	}
 
+	// Sum distinct power domains (Package + Dram + Gpu)
+	// Core and Uncore are already included in Package; Psys overlaps with Package
 	if hasAny {
+		total := stats.PackageWatts + stats.DramWatts + stats.GpuWatts
+		if total > 0 {
+			stats.TotalWatts = math.Round(total*10) / 10
+		}
 		stats.HasRealPower = true
 	}
+
 	r.prevTime = now
 
 	return stats
