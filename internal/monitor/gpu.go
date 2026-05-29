@@ -19,6 +19,11 @@ type GPUStats struct {
 	MemTotal  uint64
 	MemUsed   uint64
 	Temp      float64
+	PowerDraw float64
+	CoreClock int
+	MemClock  int
+	FanSpeed  float64
+	MemTemp   float64
 }
 
 func detectGPUs() []GPUStats {
@@ -70,10 +75,94 @@ func detectGPUsSysfs() []GPUStats {
 		gpu.MemTotal, gpu.MemUsed = readGPUMem(devPath)
 		gpu.Temp = readGPUTemp(devPath)
 
+		switch vendor {
+		case "1002": // AMD
+			gpu.PowerDraw = readAMDGPUPower(devPath)
+			gpu.FanSpeed = readAMDGPUFan(devPath)
+			gpu.MemTemp = readAMDGPUMemTemp(devPath)
+		case "8086": // Intel
+			gpu.CoreClock = readIntelGPUClock(drmDir, name)
+		}
+
 		gpus = append(gpus, gpu)
 	}
 
 	return gpus
+}
+
+func readAMDGPUPower(devPath string) float64 {
+	hwmonDir := filepath.Join(devPath, "hwmon")
+	entries, err := os.ReadDir(hwmonDir)
+	if err != nil {
+		return -1
+	}
+	for _, h := range entries {
+		v, err := readUintFromFile(filepath.Join(hwmonDir, h.Name(), "power1_average"))
+		if err != nil {
+			continue
+		}
+		// power1_average is in microwatts
+		return float64(v) / 1e6
+	}
+	return -1
+}
+
+func readAMDGPUFan(devPath string) float64 {
+	hwmonDir := filepath.Join(devPath, "hwmon")
+	entries, err := os.ReadDir(hwmonDir)
+	if err != nil {
+		return -1
+	}
+	for _, h := range entries {
+		v, err := readUintFromFile(filepath.Join(hwmonDir, h.Name(), "fan1_input"))
+		if err != nil {
+			continue
+		}
+		maxV, err := readUintFromFile(filepath.Join(hwmonDir, h.Name(), "fan1_max"))
+		if err != nil {
+			return float64(v)
+		}
+		return float64(v) / float64(maxV) * 100
+	}
+	return -1
+}
+
+func readAMDGPUMemTemp(devPath string) float64 {
+	hwmonDir := filepath.Join(devPath, "hwmon")
+	entries, err := os.ReadDir(hwmonDir)
+	if err != nil {
+		return -1
+	}
+	for _, h := range entries {
+		// Try temp2_input (typically memory junction on AMD GPUs)
+		for _, t := range []string{"temp2_input", "temp3_input"} {
+			v, err := readIntFromFile(filepath.Join(hwmonDir, h.Name(), t))
+			if err != nil {
+				continue
+			}
+			return float64(v) / 1000.0
+		}
+	}
+	return -1
+}
+
+func readIntelGPUClock(drmDir, cardName string) int {
+	connectors, err := os.ReadDir(drmDir)
+	if err != nil {
+		return -1
+	}
+	prefix := cardName + "-"
+	for _, c := range connectors {
+		if !strings.HasPrefix(c.Name(), prefix) {
+			continue
+		}
+		v, err := readIntFromFile(filepath.Join(drmDir, c.Name(), "device", "gt_cur_freq_mhz"))
+		if err != nil {
+			continue
+		}
+		return v
+	}
+	return -1
 }
 
 func readGPUName(devPath, vendor, device string) string {
@@ -172,7 +261,7 @@ func enrichWithNvidiaSMI(gpus []GPUStats) {
 	}
 
 	data, err := exec.Command("nvidia-smi",
-		"--query-gpu=index,name,utilization.gpu,memory.total,memory.used,temperature.gpu",
+		"--query-gpu=index,name,utilization.gpu,memory.total,memory.used,temperature.gpu,temperature.memory,power.draw,clocks.current.graphics,clocks.current.memory,fan.speed",
 		"--format=csv,noheader,nounits",
 	).Output()
 	if err != nil {
@@ -217,9 +306,46 @@ func enrichWithNvidiaSMI(gpus []GPUStats) {
 			gpus[idx].MemUsed = memUsed
 		}
 
-		temp, err := strconv.ParseFloat(strings.TrimSpace(parts[5]), 64)
-		if err == nil {
-			gpus[idx].Temp = temp
+		if len(parts) > 5 {
+			temp, err := strconv.ParseFloat(strings.TrimSpace(parts[5]), 64)
+			if err == nil {
+				gpus[idx].Temp = temp
+			}
+		}
+
+		if len(parts) > 6 {
+			memTemp, err := strconv.ParseFloat(strings.TrimSpace(parts[6]), 64)
+			if err == nil {
+				gpus[idx].MemTemp = memTemp
+			}
+		}
+
+		if len(parts) > 7 {
+			power, err := strconv.ParseFloat(strings.TrimSpace(parts[7]), 64)
+			if err == nil {
+				gpus[idx].PowerDraw = power
+			}
+		}
+
+		if len(parts) > 8 {
+			clk, err := strconv.Atoi(strings.TrimSpace(parts[8]))
+			if err == nil {
+				gpus[idx].CoreClock = clk
+			}
+		}
+
+		if len(parts) > 9 {
+			clk, err := strconv.Atoi(strings.TrimSpace(parts[9]))
+			if err == nil {
+				gpus[idx].MemClock = clk
+			}
+		}
+
+		if len(parts) > 10 {
+			fan, err := strconv.ParseFloat(strings.TrimSpace(parts[10]), 64)
+			if err == nil {
+				gpus[idx].FanSpeed = fan
+			}
 		}
 	}
 }
@@ -230,6 +356,23 @@ func readFile(path string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+func readUintFromFile(path string) (uint64, error) {
+	s, err := readFile(path)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseUint(s, 10, 64)
+}
+
+func readIntFromFile(path string) (int, error) {
+	s, err := readFile(path)
+	if err != nil {
+		return 0, err
+	}
+	v, err := strconv.Atoi(s)
+	return v, err
 }
 
 func fallbackGPUVendorName(vendor, device string) string {

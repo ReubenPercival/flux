@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,15 +15,17 @@ import (
 const fluxTitle = "    ╭──────────────────╮\n    │     FLUX         │\n    ╰──────────────────╯"
 
 var (
-	colorCyan     = lipgloss.Color("#7dcfff")
-	colorGreen    = lipgloss.Color("#9ece6a")
-	colorYellow   = lipgloss.Color("#e0af68")
-	colorOrange   = lipgloss.Color("#ff9e64")
-	colorRed      = lipgloss.Color("#f7768e")
-	colorPurple   = lipgloss.Color("#bb9af7")
-	colorTeal     = lipgloss.Color("#2ac3de")
-	colorDim      = lipgloss.Color("#565f89")
-	colorBorder   = lipgloss.Color("#3b4261")
+	colorCyan   = lipgloss.Color("#7dcfff")
+	colorGreen  = lipgloss.Color("#9ece6a")
+	colorYellow = lipgloss.Color("#e0af68")
+	colorOrange = lipgloss.Color("#ff9e64")
+	colorRed    = lipgloss.Color("#f7768e")
+	colorPurple = lipgloss.Color("#bb9af7")
+	colorTeal   = lipgloss.Color("#2ac3de")
+	colorDim    = lipgloss.Color("#565f89")
+	colorBorder = lipgloss.Color("#3b4261")
+	colorBgAlt  = lipgloss.Color("#1f2335")
+	colorBlue   = lipgloss.Color("#3d59a1")
 
 	appStyle = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -35,9 +38,11 @@ var (
 		MarginBottom(1).
 		Render
 
-	headerStyle = lipgloss.NewStyle().
+	sectionStyle = lipgloss.NewStyle().
 		Foreground(colorTeal).
-		Bold(true)
+		Bold(true).
+		MarginBottom(0).
+		Render
 
 	labelStyle = lipgloss.NewStyle().
 		Foreground(colorDim).
@@ -47,29 +52,244 @@ var (
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(colorBorder).
 		Padding(0, 1)
+
+	helpStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorTeal).
+		Padding(1, 2)
 )
 
 type tickMsg time.Time
 
-// Model represents the UI state
-// Note: Model is not shared across goroutines. Bubble Tea runs the Update and View
-// functions sequentially on a single goroutine, so the model is thread-safe within
-// the context of Bubble Tea's event loop.
+type sortField int
+
+const (
+	sortCPU sortField = iota
+	sortMem
+	sortName
+	sortPID
+)
+
+func (s sortField) String() string {
+	switch s {
+	case sortCPU:
+		return "CPU%"
+	case sortMem:
+		return "MEM"
+	case sortName:
+		return "NAME"
+	case sortPID:
+		return "PID"
+	}
+	return ""
+}
+
 type Model struct {
 	monitor    *monitor.Monitor
 	spinner    spinner.Model
 	cpuHistory []float64
 	width      int
 	height     int
+
+	showGPU      bool
+	showDisks    bool
+	showProcs    bool
+	showNet      bool
+	showAllProcs bool
+	showHelp     bool
+	procSort     sortField
+	procSortAsc  bool
 }
 
-// panelContentWidth returns chars available inside a panel's content area.
-// appStyle border(1+1)=2 + padding(2+2)=4 = 6 consumed.
-// panelStyle border(1+1)=2 + padding(1+1)=2 = 4 consumed.
-// Total overhead from both styles = 10.
+func NewModel(mon *monitor.Monitor) Model {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(colorTeal)
+
+	return Model{
+		monitor:      mon,
+		spinner:      sp,
+		showGPU:      true,
+		showDisks:    true,
+		showProcs:    true,
+		showNet:      true,
+		showAllProcs: false,
+		procSort:     sortCPU,
+	}
+}
+
+func (m Model) Init() tea.Cmd {
+	m.monitor.Update()
+	return tea.Batch(
+		m.spinner.Tick,
+		tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+			return tickMsg(t)
+		}),
+	)
+}
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		case "1":
+			m.showGPU = !m.showGPU
+		case "2":
+			m.showDisks = !m.showDisks
+		case "3":
+			m.showProcs = !m.showProcs
+		case "4":
+			m.showNet = !m.showNet
+		case "r":
+			m.showAllProcs = !m.showAllProcs
+		case "s":
+			switch m.procSort {
+			case sortCPU:
+				m.procSort = sortMem
+			case sortMem:
+				m.procSort = sortName
+			case sortName:
+				m.procSort = sortPID
+			case sortPID:
+				m.procSort = sortCPU
+			}
+		case "S":
+			m.procSortAsc = !m.procSortAsc
+		case "h":
+			m.showHelp = !m.showHelp
+		}
+	case tickMsg:
+		m.monitor.Update()
+		m.cpuHistory = append(m.cpuHistory, m.monitor.CPU.UsagePercent)
+		if len(m.cpuHistory) > 60 {
+			m.cpuHistory = m.cpuHistory[1:]
+		}
+		return m, tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+			return tickMsg(t)
+		})
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+	}
+
+	return m, nil
+}
+
+func (m Model) View() string {
+	if m.showHelp {
+		return m.renderHelp()
+	}
+
+	title := titleStyle(fluxTitle)
+	body := m.renderBody()
+	footer := m.renderFooter()
+
+	return appStyle.Render(
+		title + "\n\n" +
+			body + "\n" +
+			footer,
+	)
+}
+
+// renderBody assembles all visible sections, dropping overflow sections.
+func (m Model) renderBody() string {
+	var sections []string
+
+	stats := m.renderSystemStats()
+	gpus := m.renderGPUs()
+	disks := m.renderDisks()
+	procs := m.renderProcesses()
+	netw := m.renderNetwork()
+
+	if m.width > 120 {
+		var leftParts, rightParts []string
+		leftParts = append(leftParts, stats)
+		if gpus != "" {
+			leftParts = append(leftParts, gpus)
+		}
+		if disks != "" {
+			rightParts = append(rightParts, disks)
+		}
+		if netw != "" {
+			rightParts = append(rightParts, netw)
+		}
+
+		left := lipgloss.JoinVertical(lipgloss.Top, leftParts...)
+		right := lipgloss.JoinVertical(lipgloss.Top, rightParts...)
+
+		leftWidth := lipgloss.Width(left)
+		rightWidth := lipgloss.Width(right)
+		colWidth := leftWidth
+		if rightWidth > colWidth {
+			colWidth = rightWidth
+		}
+
+		left = lipgloss.NewStyle().Width(colWidth).Render(left)
+		right = lipgloss.NewStyle().Width(colWidth).Render(right)
+
+		sections = append(sections, lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right))
+		if procs != "" {
+			sections = append(sections, procs)
+		}
+	} else {
+		sections = append(sections, stats)
+		if gpus != "" {
+			sections = append(sections, gpus)
+		}
+		if disks != "" {
+			sections = append(sections, disks)
+		}
+		if procs != "" {
+			sections = append(sections, procs)
+		}
+		if netw != "" {
+			sections = append(sections, netw)
+		}
+	}
+
+	if m.height == 0 {
+		return lipgloss.JoinVertical(lipgloss.Top, sections...)
+	}
+
+	titleH := 4
+	footerH := 1
+	overhead := 4
+	avail := m.height - titleH - footerH - overhead
+
+	var result []string
+	for _, s := range sections {
+		h := strings.Count(s, "\n") + 1
+		if avail-h < 0 {
+			break
+		}
+		result = append(result, s)
+		avail -= h
+	}
+	return lipgloss.JoinVertical(lipgloss.Top, result...)
+}
+
+// --- Sizing ---
+
 func (m Model) panelContentWidth() int {
 	if m.width <= 0 {
 		return 66
+	}
+	if m.width > 120 {
+		w := (m.width - 10 - 2) / 2
+		if w > 60 {
+			w = 60
+		}
+		if a := w - 10; a > 20 {
+			return a
+		}
+		return 20
 	}
 	if a := m.width - 10; a > 20 {
 		return a
@@ -77,9 +297,6 @@ func (m Model) panelContentWidth() int {
 	return 20
 }
 
-// mainBarWidth is the number of fillable chars inside bar brackets []
-// for CPU / MEM / SWAP lines. The tightest constraint is the MEM/SWAP
-// suffix " (99999MB/99999MB)" which adds ~36 chars of fixed overhead.
 func (m Model) mainBarWidth() int {
 	w := m.panelContentWidth() - 38
 	switch {
@@ -105,7 +322,6 @@ func (m Model) diskBarWidth() int {
 }
 
 func (m Model) gpuBarWidth() int {
-	// GPU lines vary a lot (names + VRAM + temp), keep bar modest
 	w := m.panelContentWidth() * 3 / 10
 	switch {
 	case w < 6:
@@ -149,108 +365,7 @@ func (m Model) procSepWidth() int {
 	return w
 }
 
-func NewModel(mon *monitor.Monitor) Model {
-	sp := spinner.New()
-	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(colorTeal)
-
-	return Model{
-		monitor: mon,
-		spinner: sp,
-	}
-}
-
-func (m Model) Init() tea.Cmd {
-	m.monitor.Update()
-	return tea.Batch(
-		m.spinner.Tick,
-		tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
-			return tickMsg(t)
-		}),
-	)
-}
-
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		return m, nil
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
-		}
-	case tickMsg:
-		m.monitor.Update()
-		m.cpuHistory = append(m.cpuHistory, m.monitor.CPU.UsagePercent)
-		if len(m.cpuHistory) > 60 {
-			m.cpuHistory = m.cpuHistory[1:]
-		}
-		return m, tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
-			return tickMsg(t)
-		})
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
-	}
-
-	return m, nil
-}
-
-func (m Model) View() string {
-	title := titleStyle(fluxTitle)
-
-	stats := m.renderSystemStats()
-	disks := m.renderDisks()
-	gpus := m.renderGPUs()
-	procs := m.renderProcesses()
-	netw := m.renderNetwork()
-	footer := m.renderFooter()
-
-	var sections []string
-	sections = append(sections, stats)
-	if gpus != "" {
-		sections = append(sections, gpus)
-	}
-	sections = append(sections, disks)
-	sections = append(sections, procs)
-	sections = append(sections, netw)
-
-	// Simple line count estimation for height-aware truncation
-	estLines := func(s string) int {
-		return strings.Count(s, "\n") + 1
-	}
-
-	titleHeight := estLines(fluxTitle)
-	footerHeight := estLines(footer)
-	// appStyle: top+bottom border (2) + top+bottom padding (2) = 4 vertical overhead
-	// panelStyle per section: top+bottom border (2) + top+bottom padding (0, but lipgloss adds ~1)
-	overhead := 4 + 2*len(sections)
-
-	totalEst := titleHeight + overhead + footerHeight
-	for _, s := range sections {
-		totalEst += estLines(s)
-	}
-
-	if m.height > 0 && totalEst > m.height {
-		// Remove sections from the end until it fits
-		for m.height > 0 && totalEst > m.height && len(sections) > 0 {
-			last := sections[len(sections)-1]
-			totalEst -= estLines(last) + 2 // panel overhead
-			sections = sections[:len(sections)-1]
-		}
-	}
-
-	body := lipgloss.JoinVertical(lipgloss.Top, sections...)
-
-	return appStyle.Render(
-		title + "\n\n" +
-			body + "\n" +
-			footer,
-	)
-}
+// --- Stats ---
 
 func (m Model) renderSystemStats() string {
 	bw := m.mainBarWidth()
@@ -294,12 +409,14 @@ func (m Model) renderSystemStats() string {
 	return panelStyle.Render(strings.Join(parts, "\n"))
 }
 
+// --- GPU ---
+
 func (m Model) renderGPUs() string {
-	if len(m.monitor.GPUs) == 0 {
+	if !m.showGPU || len(m.monitor.GPUs) == 0 {
 		return ""
 	}
 
-	content := headerStyle.Render(" GPU") + "\n"
+	content := sectionStyle(" GPU") + "\n"
 
 	for _, gpu := range m.monitor.GPUs {
 		line := lipgloss.NewStyle().Foreground(colorCyan).Render(gpu.Name)
@@ -316,18 +433,49 @@ func (m Model) renderGPUs() string {
 		}
 
 		if gpu.Temp >= 0 {
-			tmp := m.colorizeTemp(gpu.Temp)
-			line += fmt.Sprintf("  %s", tmp)
+			line += fmt.Sprintf("  %s", m.colorizeTemp(gpu.Temp))
 		}
 
 		content += line + "\n"
+
+		// Second line: extended stats
+		var extras []string
+		if gpu.PowerDraw > 0 {
+			extras = append(extras, lipgloss.NewStyle().Foreground(colorYellow).Render(fmt.Sprintf("%.0fW", gpu.PowerDraw)))
+		}
+		if gpu.CoreClock > 0 {
+			clkStyle := lipgloss.NewStyle().Foreground(colorTeal)
+			extra := fmt.Sprintf("%dMHz", gpu.CoreClock)
+			if gpu.MemClock > 0 {
+				extra += fmt.Sprintf("/%dMHz", gpu.MemClock)
+			}
+			extras = append(extras, clkStyle.Render(extra))
+		} else if gpu.MemClock > 0 {
+			extras = append(extras, lipgloss.NewStyle().Foreground(colorTeal).Render(fmt.Sprintf("%dMHz", gpu.MemClock)))
+		}
+		if gpu.FanSpeed >= 0 {
+			extras = append(extras, lipgloss.NewStyle().Foreground(colorDim).Render(fmt.Sprintf("Fan %.0f%%", gpu.FanSpeed)))
+		}
+		if gpu.MemTemp > 0 {
+			extras = append(extras, m.colorizeTemp(gpu.MemTemp)+labelStyle(" M"))
+		}
+
+		if len(extras) > 0 {
+			content += "      " + strings.Join(extras, "  ") + "\n"
+		}
 	}
 
 	return panelStyle.Render(strings.TrimSuffix(content, "\n"))
 }
 
+// --- Disks ---
+
 func (m Model) renderDisks() string {
-	content := headerStyle.Render(" DISKS") + "\n"
+	if !m.showDisks || len(m.monitor.Disks) == 0 {
+		return ""
+	}
+
+	content := sectionStyle(" DISKS") + "\n"
 
 	for _, disk := range m.monitor.Disks {
 		bar := m.renderGradientBar(disk.UsagePercent, m.diskBarWidth())
@@ -340,19 +488,28 @@ func (m Model) renderDisks() string {
 	return panelStyle.Render(strings.TrimSuffix(content, "\n"))
 }
 
+// --- Processes ---
+
 func (m Model) renderProcesses() string {
-	content := headerStyle.Render(" PROCESSES") + "\n"
+	if !m.showProcs {
+		return ""
+	}
+
+	procs := m.filterAndSortProcs()
+	if len(procs) == 0 {
+		return ""
+	}
+
 	nw := m.procNameWidth()
+	sortHint := m.sortHint()
+
+	content := sectionStyle(" PROCESSES") + "\n"
 	content += lipgloss.NewStyle().Foreground(colorDim).Render(
-		fmt.Sprintf(" %-7s %-*s %6s %8s %7s", "PID", nw, "NAME", "CPU%", "MEM", "UPTIME"),
+		fmt.Sprintf(" %-7s %-*s %6s %8s %7s  %s", "PID", nw, "NAME", "CPU%", "MEM", "UPTIME", sortHint),
 	) + "\n"
-	content += lipgloss.NewStyle().Foreground(colorBorder).Render(" " + strings.Repeat("─", m.procSepWidth())) + "\n"
+	content += lipgloss.NewStyle().Foreground(colorBorder).Render(" " + strings.Repeat("─", m.procSepWidth()+len(sortHint)+1)) + "\n"
 
-	for i, proc := range m.monitor.Processes {
-		if proc.CPUPercent < 0.1 && proc.MemoryMB < 10 {
-			continue
-		}
-
+	for i, proc := range procs {
 		runtime := fmt.Sprintf("%dh%02dm", proc.RuntimeSecs/3600, (proc.RuntimeSecs%3600)/60)
 		name := proc.Name
 		if len(name) > nw {
@@ -368,7 +525,7 @@ func (m Model) renderProcesses() string {
 		row := fmt.Sprintf(" %-7d %-*s %s %s %7s", proc.PID, nw, name, cpuStr, memStr, runtime)
 
 		if i%2 == 1 {
-			row = lipgloss.NewStyle().Background(lipgloss.Color("#1f2335")).Render(row)
+			row = lipgloss.NewStyle().Background(colorBgAlt).Render(row)
 		}
 
 		content += row + "\n"
@@ -377,8 +534,58 @@ func (m Model) renderProcesses() string {
 	return panelStyle.Render(strings.TrimSuffix(content, "\n"))
 }
 
+func (m Model) sortHint() string {
+	indicator := "↓"
+	if m.procSortAsc {
+		indicator = "↑"
+	}
+	return labelStyle(fmt.Sprintf("[sort:%s%s]", m.procSort, indicator))
+}
+
+func (m Model) filterAndSortProcs() []monitor.ProcessInfo {
+	procs := m.monitor.Processes
+	if !m.showAllProcs {
+		var filtered []monitor.ProcessInfo
+		for _, p := range procs {
+			if p.CPUPercent >= 0.1 || p.MemoryMB >= 10 {
+				filtered = append(filtered, p)
+			}
+		}
+		procs = filtered
+	}
+
+	sorted := make([]monitor.ProcessInfo, len(procs))
+	copy(sorted, procs)
+
+	sort.Slice(sorted, func(i, j int) bool {
+		var less bool
+		switch m.procSort {
+		case sortCPU:
+			less = sorted[i].CPUPercent < sorted[j].CPUPercent
+		case sortMem:
+			less = sorted[i].MemoryMB < sorted[j].MemoryMB
+		case sortName:
+			less = sorted[i].Name < sorted[j].Name
+		case sortPID:
+			less = sorted[i].PID < sorted[j].PID
+		}
+		if m.procSortAsc {
+			return less
+		}
+		return !less
+	})
+
+	return sorted
+}
+
+// --- Network ---
+
 func (m Model) renderNetwork() string {
-	content := headerStyle.Render(" NETWORK") + "\n"
+	if !m.showNet {
+		return ""
+	}
+
+	content := sectionStyle(" NETWORK") + "\n"
 
 	for _, iface := range m.monitor.Network {
 		if iface.Name == "lo" {
@@ -398,190 +605,71 @@ func (m Model) renderNetwork() string {
 	return panelStyle.Render(strings.TrimSuffix(content, "\n"))
 }
 
+// --- Footer ---
+
 func (m Model) renderFooter() string {
 	timeStr := lipgloss.NewStyle().Foreground(colorTeal).Render(m.monitor.LastUpdate.Format("15:04:05"))
-	hint := lipgloss.NewStyle().Foreground(colorDim).Render("q/ctrl+c")
-	return fmt.Sprintf("%s  updated %s", hint, timeStr)
+	sep := labelStyle(" · ")
+
+	hints := []string{
+		"q:quit",
+		"h:help",
+	}
+	sections := []string{
+		fmt.Sprintf("1:%s", onOff(m.showGPU, "GPU")),
+		fmt.Sprintf("2:%s", onOff(m.showDisks, "DSK")),
+		fmt.Sprintf("3:%s", onOff(m.showProcs, "PRO")),
+		fmt.Sprintf("4:%s", onOff(m.showNet, "NET")),
+	}
+	if m.showProcs {
+		sections = append(sections, "s:sort", fmt.Sprintf("r:%s", onOff(m.showAllProcs, "all")))
+	}
+
+	left := strings.Join(hints, sep)
+	middle := strings.Join(sections, sep)
+	right := fmt.Sprintf("updated %s", timeStr)
+
+	return fmt.Sprintf("%s%s%s%s%s",
+		lipgloss.NewStyle().Foreground(colorDim).Render(left),
+		sep, lipgloss.NewStyle().Foreground(colorYellow).Render(middle),
+		sep, right,
+	)
 }
 
-func (m Model) renderGradientBar(percent float64, width int) string {
-	filled := int(float64(width) * percent / 100)
-	if filled > width {
-		filled = width
+func onOff(on bool, label string) string {
+	if on {
+		return lipgloss.NewStyle().Foreground(colorGreen).Render(label)
 	}
-
-	bar := "["
-
-	for i := 0; i < width; i++ {
-		if i < filled {
-			ratio := float64(i) / float64(width)
-			bar += m.barColor(ratio, percent)
-		} else {
-			bar += lipgloss.NewStyle().Foreground(colorBorder).Render("░")
-		}
-	}
-
-	bar += "]"
-	return bar
+	return lipgloss.NewStyle().Foreground(colorDim).Render(label)
 }
 
-func (m Model) barColor(ratio, percent float64) string {
-	var c lipgloss.Color
-	switch {
-	case percent < 50:
-		if ratio < 0.5 {
-			c = lipgloss.Color("#3d59a1")
-		} else {
-			c = colorGreen
-		}
-	case percent < 75:
-		if ratio < 0.33 {
-			c = lipgloss.Color("#3d59a1")
-		} else if ratio < 0.66 {
-			c = colorYellow
-		} else {
-			c = colorOrange
-		}
-	default:
-		if ratio < 0.25 {
-			c = lipgloss.Color("#3d59a1")
-		} else if ratio < 0.5 {
-			c = colorOrange
-		} else if ratio < 0.75 {
-			c = colorRed
-		} else {
-			c = lipgloss.Color("#db4b4b")
-		}
+// --- Help ---
+
+func (m Model) renderHelp() string {
+	lines := []string{
+		titleStyle(fluxTitle),
+		"",
+		sectionStyle(" KEYBOARD"),
+		"",
+		"  q / Ctrl+C     quit",
+		"  h              toggle this help",
+		"",
+		"  1              toggle GPU section",
+		"  2              toggle Disks section",
+		"  3              toggle Processes section",
+		"  4              toggle Network section",
+		"",
+		"  s              cycle process sort order",
+		"  S              toggle sort direction",
+		"  r              toggle show all / hide idle",
+		"",
+		labelStyle(" press h to close "),
 	}
-	return lipgloss.NewStyle().Foreground(c).Render("█")
+
+	return helpStyle.Render(strings.Join(lines, "\n"))
 }
 
-func (m Model) colorizePercent(percent float64) string {
-	c := m.percentColor(percent)
-	return lipgloss.NewStyle().Foreground(c).Render(fmt.Sprintf("%5.1f%%", percent))
-}
-
-func (m Model) colorizeTemp(temp float64) string {
-	var c lipgloss.Color
-	switch {
-	case temp < 50:
-		c = colorGreen
-	case temp < 70:
-		c = colorYellow
-	case temp < 85:
-		c = colorOrange
-	default:
-		c = colorRed
-	}
-	return lipgloss.NewStyle().Foreground(c).Render(fmt.Sprintf("%.0f°C", temp))
-}
-
-func (m Model) percentColor(percent float64) lipgloss.Color {
-	switch {
-	case percent < 50:
-		return colorGreen
-	case percent < 75:
-		return colorYellow
-	default:
-		return colorRed
-	}
-}
-
-func (m Model) renderSparkline(data []float64, width int) string {
-	if len(data) == 0 {
-		return strings.Repeat(" ", width)
-	}
-
-	if len(data) > width {
-		data = data[len(data)-width:]
-	}
-
-	chars := []rune("▁▂▃▄▅▆▇█")
-	var sb strings.Builder
-	for _, val := range data {
-		idx := int(val / 100.0 * 7)
-		if idx < 0 {
-			idx = 0
-		}
-		if idx > 7 {
-			idx = 7
-		}
-		sb.WriteRune(chars[idx])
-	}
-
-	return sb.String()
-}
-
-func (m Model) renderMiniBar(percent float64, width int) string {
-	filled := int(float64(width) * percent / 100)
-	if filled > width {
-		filled = width
-	}
-
-	c := m.percentColor(percent)
-	filledChar := lipgloss.NewStyle().Foreground(c).Render("█")
-	emptyChar := lipgloss.NewStyle().Foreground(colorBorder).Render("░")
-
-	var sb strings.Builder
-	for i := 0; i < width; i++ {
-		if i < filled {
-			sb.WriteString(filledChar)
-		} else {
-			sb.WriteString(emptyChar)
-		}
-	}
-
-	return sb.String()
-}
-
-func (m Model) renderPerCoreCPU() string {
-	cores := m.monitor.CPU.PerCPU
-	if len(cores) == 0 {
-		return ""
-	}
-
-	barWidth := m.miniBarWidth()
-	var rows []string
-
-	for i := 0; i < len(cores); i += 2 {
-		var row string
-
-		c := cores[i]
-		bar := m.renderMiniBar(c, barWidth)
-		pct := lipgloss.NewStyle().Foreground(m.percentColor(c)).Render(fmt.Sprintf("%5.1f%%", c))
-		row += fmt.Sprintf(" C%d %s %s", i, bar, pct)
-
-		if i+1 < len(cores) {
-			c = cores[i+1]
-			bar = m.renderMiniBar(c, barWidth)
-			pct = lipgloss.NewStyle().Foreground(m.percentColor(c)).Render(fmt.Sprintf("%5.1f%%", c))
-			row += fmt.Sprintf("  C%d %s %s", i+1, bar, pct)
-		}
-
-		rows = append(rows, row)
-	}
-
-	return strings.Join(rows, "\n")
-}
-
-func (m Model) colorizeLoad(load1, load5, load15 float64, cores int32) string {
-	loadColor := func(l float64) lipgloss.Color {
-		switch {
-		case l < float64(cores)*0.7:
-			return colorGreen
-		case l < float64(cores)*1.5:
-			return colorYellow
-		default:
-			return colorRed
-		}
-	}
-
-	l1 := lipgloss.NewStyle().Foreground(loadColor(load1)).Render(fmt.Sprintf("%.2f", load1))
-	l5 := lipgloss.NewStyle().Foreground(loadColor(load5)).Render(fmt.Sprintf("%.2f", load5))
-	l15 := lipgloss.NewStyle().Foreground(loadColor(load15)).Render(fmt.Sprintf("%.2f", load15))
-
-	return fmt.Sprintf("Load: %s %s %s", l1, l5, l15)
-}
+// --- Power ---
 
 func (m Model) renderPower() string {
 	p := m.monitor.Power
@@ -665,4 +753,183 @@ func (m Model) formatThroughput(bps float64) string {
 		unit = "B/s"
 	}
 	return lipgloss.NewStyle().Foreground(colorDim).Render(fmt.Sprintf("%6.1f %s", val, unit))
+}
+
+// --- Bars ---
+
+func (m Model) renderGradientBar(percent float64, width int) string {
+	filled := int(float64(width) * percent / 100)
+	if filled > width {
+		filled = width
+	}
+
+	bar := "["
+	for i := 0; i < width; i++ {
+		if i < filled {
+			ratio := float64(i) / float64(width)
+			bar += m.barColor(ratio, percent)
+		} else {
+			bar += lipgloss.NewStyle().Foreground(colorBorder).Render("░")
+		}
+	}
+	bar += "]"
+	return bar
+}
+
+func (m Model) barColor(ratio, percent float64) string {
+	var c lipgloss.Color
+	switch {
+	case percent < 50:
+		if ratio < 0.5 {
+			c = colorBlue
+		} else {
+			c = colorGreen
+		}
+	case percent < 75:
+		if ratio < 0.33 {
+			c = colorBlue
+		} else if ratio < 0.66 {
+			c = colorYellow
+		} else {
+			c = colorOrange
+		}
+	default:
+		if ratio < 0.25 {
+			c = colorBlue
+		} else if ratio < 0.5 {
+			c = colorOrange
+		} else if ratio < 0.75 {
+			c = colorRed
+		} else {
+			c = lipgloss.Color("#db4b4b")
+		}
+	}
+	return lipgloss.NewStyle().Foreground(c).Render("█")
+}
+
+func (m Model) renderMiniBar(percent float64, width int) string {
+	filled := int(float64(width) * percent / 100)
+	if filled > width {
+		filled = width
+	}
+
+	c := m.percentColor(percent)
+	filledChar := lipgloss.NewStyle().Foreground(c).Render("█")
+	emptyChar := lipgloss.NewStyle().Foreground(colorBorder).Render("░")
+
+	var sb strings.Builder
+	for i := 0; i < width; i++ {
+		if i < filled {
+			sb.WriteString(filledChar)
+		} else {
+			sb.WriteString(emptyChar)
+		}
+	}
+	return sb.String()
+}
+
+func (m Model) renderSparkline(data []float64, width int) string {
+	if len(data) == 0 {
+		return strings.Repeat(" ", width)
+	}
+	if len(data) > width {
+		data = data[len(data)-width:]
+	}
+
+	chars := []rune("▁▂▃▄▅▆▇█")
+	var sb strings.Builder
+	for _, val := range data {
+		idx := int(val / 100.0 * 7)
+		if idx < 0 {
+			idx = 0
+		}
+		if idx > 7 {
+			idx = 7
+		}
+		sb.WriteRune(chars[idx])
+	}
+	return sb.String()
+}
+
+// --- Coloring ---
+
+func (m Model) colorizePercent(percent float64) string {
+	c := m.percentColor(percent)
+	return lipgloss.NewStyle().Foreground(c).Render(fmt.Sprintf("%5.1f%%", percent))
+}
+
+func (m Model) colorizeTemp(temp float64) string {
+	var c lipgloss.Color
+	switch {
+	case temp < 50:
+		c = colorGreen
+	case temp < 70:
+		c = colorYellow
+	case temp < 85:
+		c = colorOrange
+	default:
+		c = colorRed
+	}
+	return lipgloss.NewStyle().Foreground(c).Render(fmt.Sprintf("%.0f°C", temp))
+}
+
+func (m Model) colorizeLoad(load1, load5, load15 float64, cores int32) string {
+	loadColor := func(l float64) lipgloss.Color {
+		switch {
+		case l < float64(cores)*0.7:
+			return colorGreen
+		case l < float64(cores)*1.5:
+			return colorYellow
+		default:
+			return colorRed
+		}
+	}
+
+	l1 := lipgloss.NewStyle().Foreground(loadColor(load1)).Render(fmt.Sprintf("%.2f", load1))
+	l5 := lipgloss.NewStyle().Foreground(loadColor(load5)).Render(fmt.Sprintf("%.2f", load5))
+	l15 := lipgloss.NewStyle().Foreground(loadColor(load15)).Render(fmt.Sprintf("%.2f", load15))
+	return fmt.Sprintf("Load: %s %s %s", l1, l5, l15)
+}
+
+func (m Model) percentColor(percent float64) lipgloss.Color {
+	switch {
+	case percent < 50:
+		return colorGreen
+	case percent < 75:
+		return colorYellow
+	default:
+		return colorRed
+	}
+}
+
+// --- Per-core CPU ---
+
+func (m Model) renderPerCoreCPU() string {
+	cores := m.monitor.CPU.PerCPU
+	if len(cores) == 0 {
+		return ""
+	}
+
+	barWidth := m.miniBarWidth()
+	var rows []string
+
+	for i := 0; i < len(cores); i += 2 {
+		var row string
+
+		c := cores[i]
+		bar := m.renderMiniBar(c, barWidth)
+		pct := lipgloss.NewStyle().Foreground(m.percentColor(c)).Render(fmt.Sprintf("%5.1f%%", c))
+		row += fmt.Sprintf(" C%d %s %s", i, bar, pct)
+
+		if i+1 < len(cores) {
+			c = cores[i+1]
+			bar = m.renderMiniBar(c, barWidth)
+			pct = lipgloss.NewStyle().Foreground(m.percentColor(c)).Render(fmt.Sprintf("%5.1f%%", c))
+			row += fmt.Sprintf("  C%d %s %s", i+1, bar, pct)
+		}
+
+		rows = append(rows, row)
+	}
+
+	return strings.Join(rows, "\n")
 }
