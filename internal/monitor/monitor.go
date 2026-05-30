@@ -131,7 +131,7 @@ func (m *Monitor) Update() error {
 }
 
 func (m *Monitor) updateCPU() error {
-	percents, err := cpu.Percent(time.Second, true)
+	percents, err := cpu.Percent(0, true)
 	if err != nil {
 		return err
 	}
@@ -262,12 +262,6 @@ func (m *Monitor) updateProcesses() error {
 	sort.Slice(m.Processes, func(i, j int) bool {
 		return m.Processes[i].CPUPercent > m.Processes[j].CPUPercent
 	})
-
-	// Keep top 15 processes to avoid overwhelming display
-	// Note: Processes with CPU% < 0.1 and MEM < 10MB are filtered in UI
-	if len(m.Processes) > 15 {
-		m.Processes = m.Processes[:15]
-	}
 
 	return nil
 }

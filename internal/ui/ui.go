@@ -222,19 +222,24 @@ func (m Model) renderBody() string {
 		}
 
 		left := lipgloss.JoinVertical(lipgloss.Top, leftParts...)
-		right := lipgloss.JoinVertical(lipgloss.Top, rightParts...)
 
-		leftWidth := lipgloss.Width(left)
-		rightWidth := lipgloss.Width(right)
-		colWidth := leftWidth
-		if rightWidth > colWidth {
-			colWidth = rightWidth
+		if len(rightParts) == 0 {
+			sections = append(sections, left)
+		} else {
+			right := lipgloss.JoinVertical(lipgloss.Top, rightParts...)
+
+			leftWidth := lipgloss.Width(left)
+			rightWidth := lipgloss.Width(right)
+			colWidth := leftWidth
+			if rightWidth > colWidth {
+				colWidth = rightWidth
+			}
+
+			left = lipgloss.NewStyle().Width(colWidth).Render(left)
+			right = lipgloss.NewStyle().Width(colWidth).Render(right)
+
+			sections = append(sections, lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right))
 		}
-
-		left = lipgloss.NewStyle().Width(colWidth).Render(left)
-		right = lipgloss.NewStyle().Width(colWidth).Render(right)
-
-		sections = append(sections, lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right))
 		if procs != "" {
 			sections = append(sections, procs)
 		}
@@ -575,6 +580,10 @@ func (m Model) filterAndSortProcs() []monitor.ProcessInfo {
 		return !less
 	})
 
+	if len(sorted) > 15 {
+		sorted = sorted[:15]
+	}
+
 	return sorted
 }
 
@@ -839,7 +848,7 @@ func (m Model) renderSparkline(data []float64, width int) string {
 	chars := []rune("▁▂▃▄▅▆▇█")
 	var sb strings.Builder
 	for _, val := range data {
-		idx := int(val / 100.0 * 7)
+		idx := int(val/100.0*7 + 0.5)
 		if idx < 0 {
 			idx = 0
 		}

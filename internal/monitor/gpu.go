@@ -26,14 +26,6 @@ type GPUStats struct {
 	MemTemp   float64
 }
 
-func detectGPUs() []GPUStats {
-	gpus := detectGPUsSysfs()
-	if len(gpus) > 0 {
-		enrichWithNvidiaSMI(gpus)
-	}
-	return gpus
-}
-
 func detectGPUsSysfs() []GPUStats {
 	gpus := []GPUStats{}
 

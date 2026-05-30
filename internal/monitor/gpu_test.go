@@ -5,7 +5,7 @@ import (
 )
 
 func TestGPUsDetected(t *testing.T) {
-	gpus := detectGPUs()
+	gpus := detectGPUsSysfs()
 	t.Logf("detected %d GPU(s)", len(gpus))
 	for _, g := range gpus {
 		t.Logf("  %s (vendor=%s usage=%.0f%% vram=%d/%dMB temp=%.0f°C)",
